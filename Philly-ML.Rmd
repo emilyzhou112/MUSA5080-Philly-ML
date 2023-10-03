@@ -30,6 +30,7 @@ library(broom.mixed) # needed for effects plots
 
 data <- st_read("/Users/emzhou/Documents/Fall2023/MUSA-PPA/Wk4/studentData.geojson")
 training <- data %>% filter(toPredict != "CHALLENGE") %>% st_transform('ESRI:102728')
+crime <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/Hospitals.geojson")
 ```
 
 
