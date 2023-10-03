@@ -1,0 +1,105 @@
+---
+title: "Philly-ML"
+author: "Emily Zhou"
+date: "2023-10-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(sf)
+library(tidyverse)
+library(spdep)
+library(caret)
+library(ckanr)
+library(FNN)
+library(grid)
+library(gridExtra)
+library(ggcorrplot) # plot correlation plot
+library(corrr)      # another way to plot correlation plot
+library(kableExtra)
+library(jtools)     # for regression model plots
+library(ggstance) # to support jtools plots
+library(ggpubr)    # plotting R^2 value on ggplot point scatter
+library(broom.mixed) # needed for effects plots
+
+
+data <- st_read("/Users/emzhou/Documents/Fall2023/MUSA-PPA/Wk4/studentData.geojson")
+training <- data %>% filter(toPredict != "CHALLENGE") %>% st_transform('ESRI:102728')
+```
+
+
+```{r process age and price}
+
+tr_processed <- training %>% 
+  mutate(Age = 2023 - year_built) %>% 
+  filter(Age < 500) %>% 
+  filter(sale_price < 2000000) %>% 
+  mutate(numRooms = number_of_bedrooms + number_of_bathrooms) %>% 
+  filter(numRooms < 30) %>% 
+  filter(total_livable_area != 0 & is.na(total_area) == FALSE)
+  
+```
+
+```{r process basement}
+tr_processed <- tr_processed %>% 
+   mutate(hasBasement = case_when(
+    basements %in% c("1", "4", "A", "B", "C", "D", "E", "F") ~ "Y",
+    TRUE~ "N"
+  ))
+  
+```
+
+```{r}
+
+tr_processed <- tr_processed %>% 
+  mutate(hasAC = case_when(
+         central_air %in% c("1", "Y") ~ "Y",
+         TRUE~ "N"),
+         exterior = case_when(
+         exterior_condition == 1 |exterior_condition == 2| exterior_condition == 3| exterior_condition == 4   ~ "Good",
+         TRUE~ "Bad"),
+         interior = case_when(
+         interior_condition == 1 |interior_condition == 2| interior_condition == 3| interior_condition == 4   ~ "Good",
+         TRUE~ "Bad"),
+         hasFireplace = case_when(
+         fireplaces == 0 | is.na(fireplaces)  ~ "N",
+         TRUE~ "Y"),
+         hasGarage = case_when(
+         garage_type == 0 | is.na(garage_type)  ~ "N",
+         TRUE~ "Y"),
+         stories = case_when(
+         number_stories == 1  ~ "single",
+         TRUE~ "multiple"),
+         area = case_when(
+           total_livable_area > total_area ~ total_livable_area,  
+           TRUE ~ total_area),
+         hasHeater = case_when(
+         type_heater == 0 | is.na(type_heater)  ~ "N",
+         TRUE~ "Y"),
+         view = case_when(
+         view_type == "I" | view_type == "0" | is.na(view_type)   ~ "T",
+         TRUE~ view_type)
+  
+  ) 
+  
+  
+```
+
+
+
+
+
+```{r}
+training %>% 
+  filter(sale_price < 2000000) %>% 
+  ggplot(aes(x = sale_price)) +
+  geom_histogram(bins = 20) +
+  labs(title = "Histogram Example", x = "X-Axis Label", y = "Frequency")
+```
+
+
