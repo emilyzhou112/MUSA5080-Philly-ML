@@ -27,10 +27,15 @@ library(ggstance) # to support jtools plots
 library(ggpubr)    # plotting R^2 value on ggplot point scatter
 library(broom.mixed) # needed for effects plots
 
+source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
+
 
 data <- st_read("/Users/emzhou/Documents/Fall2023/MUSA-PPA/Wk4/studentData.geojson")
 training <- data %>% filter(toPredict != "CHALLENGE") %>% st_transform('ESRI:102728')
-crime <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/Hospitals.geojson")
+crime <- st_read("/Users/emzhou/Documents/GitHub/MUSA5080-Philly-ML/data/crime.geojson") %>% st_transform('ESRI:102728')
+hospital <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/Hospitals.geojson") %>% st_transform('ESRI:102728')
+neighborhood <- st_read("/Users/emzhou/Documents/GitHub/MUSA5080-Philly-ML/data/neighborhood.geojson") %>% st_transform('ESRI:102728')
+
 ```
 
 
@@ -92,6 +97,164 @@ tr_processed <- tr_processed %>%
 ```
 
 
+
+```{r}
+
+tr_processed_reg <- tr_processed %>% st_drop_geometry()
+reg1 <- lm(sale_price ~ ., data = tr_processed_reg %>% 
+                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, exterior, interior, 
+                                               hasFireplace, hasGarage, stories, area, view))
+
+summary(reg1)
+```
+
+
+```{r}
+reg2 <- lm(sale_price ~ ., data = tr_processed_reg %>% 
+                                 dplyr::select(sale_price,building_code_description_new, Age, numRooms, hasBasement, hasAC, interior, exterior, hasHeater,hasFireplace, hasGarage, area))
+
+summary(reg2)
+```
+
+```{r}
+
+anova_result <- aov(tr_processed$sale_price ~ as.factor(tr_processed$building_code_description_new))
+summary(anova_result)
+
+```
+
+
+```{r}
+vif(reg2)
+```
+
+
+```{r}
+step(reg2)
+```
+
+
+
+```{r}
+residuals_df <- data.frame(Residuals = resid(reg4), Fitted = fitted(reg4))
+ggplot(residuals_df, aes(x = Fitted, y = Residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Fitted Values", y = "Residuals", title = "Residual Plot")
+```
+
+
+
+```{r}
+tr_processed %>% 
+  group_by(building_code_description_new) %>% 
+  summarise(n())
+```
+
+```{r}
+
+tr_neigh <- st_join(tr_processed, neighborhood %>% select(NAME))
+
+```
+
+
+```{r}
+
+reg3 <- lm(sale_price ~ ., data = tr_neigh %>% st_drop_geometry() %>% 
+                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, interior, exterior, hasHeater,hasFireplace, hasGarage, area, NAME))
+
+summary(reg3)
+```
+```{r}
+vif(reg3)
+```
+
+
+
+
+```{r}
+assault <- crime %>% 
+  filter(text_gener == "Aggravated Assault Firearm" | text_gener == "Aggravated Assault No Firearm") %>% 
+  dplyr::select(point_x, point_y) %>%
+    na.omit()
+```
+
+
+```{r}
+tr_neigh <-
+  tr_neigh %>% 
+    mutate(crime_nn3 = nn_function(st_coordinates(tr_neigh), 
+                              st_coordinates(assault), k = 3))
+```
+
+
+```{r}
+reg4 <- lm(sale_price ~ ., data = tr_neigh %>% st_drop_geometry() %>% 
+                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, interior, exterior, hasHeater,hasFireplace, hasGarage, area, NAME, crime_nn3, building_code_description_new, stories, view))
+
+summary(reg4)
+```
+
+```{r}
+vif(reg4)
+```
+
+
+```{r}
+
+tract <- st_read("/Users/emzhou/Documents/GitHub/MUSA5080-Philly-ML/data/Census_Blocks_2010.geojson") %>% st_transform('ESRI:102728')
+
+tr_tract <- st_join(tr_processed, tract %>% select(GEOID10))
+
+gi_data <- tr_tract %>% 
+  st_drop_geometry() %>% 
+  select(GEOID10, sale_price) %>% 
+  group_by(GEOID10) %>% 
+  summarize(mean_sp = mean(sale_price)) %>% 
+  na.omit() %>% 
+  left_join(tract) %>% 
+  st_sf()
+
+gi_data <- gi_data %>% 
+  st_make_valid()
+
+```
+
+```{r}
+
+list_nb <- poly2nb(gi_data, queen = TRUE)
+
+
+empty_nb <- which(card(list_nb) == 0)
+empty_nb   
+
+gi_subset <- gi_data[-empty_nb, ]
+
+neigh_nbs <- gi_subset %>% 
+  mutate(
+    nb = st_contiguity(geometry),        # neighbors share border/vertex
+    wt = st_weights(nb),                 # row-standardized weights
+    neigh_lag = st_lag(mean_sp, nb, wt)    # calculate spatial lag of TreEqty
+  )
+
+gi_hot_spots <- neigh_nbs %>% 
+  mutate(
+    Gi = local_g_perm(mean_sp, nb, wt, nsim = 999)
+    # nsim = number of Monte Carlo simulations (999 is default)
+  ) %>% 
+  unnest(Gi) 
+
+
+```
+
+
+
+```{r}
+gi_hot_spots |> 
+  ggplot((aes(fill = gi))) +
+  geom_sf(color = NA) +
+scale_fill_gradient2()  + theme_dark()
+```
 
 
 
