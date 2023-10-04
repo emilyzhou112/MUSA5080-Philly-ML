@@ -80,6 +80,7 @@ tr_processed <- tr_processed %>%
          TRUE~ "Y"),
          stories = case_when(
          number_stories == 1  ~ "single",
+         number_stories == 2  ~ "double",
          TRUE~ "multiple"),
          area = case_when(
            total_livable_area > total_area ~ total_livable_area,  
@@ -88,10 +89,18 @@ tr_processed <- tr_processed %>%
          type_heater == 0 | is.na(type_heater)  ~ "N",
          TRUE~ "Y"),
          view = case_when(
-         view_type == "I" | view_type == "0" | is.na(view_type)   ~ "T",
-         TRUE~ view_type)
-  
-  ) 
+         view_type == "I" | view_type == "0" | is.na(view_type)   ~ "Typical",
+         view_type == "A" | view_type == "B" | view_type == "C" ~ "Scenic",
+         TRUE~ "Urban"), 
+         quality = case_when(
+         quality_grade %in% c("4", "5", "6", "A", "A+", "A-", "B", "B+","B-","S","S+","X-")  ~ "Good",
+         TRUE~ "Bad"),
+         buildingdis = case_when(
+         grepl("ROW",building_code_description_new, ignore.case = FALSE) ~ "Row",
+         grepl("TWIN",building_code_description_new, ignore.case = FALSE) ~ "TWIN",
+         TRUE~ "Other")
+  ) %>% 
+  filter(area < 50000)
   
   
 ```
@@ -102,19 +111,12 @@ tr_processed <- tr_processed %>%
 
 tr_processed_reg <- tr_processed %>% st_drop_geometry()
 reg1 <- lm(sale_price ~ ., data = tr_processed_reg %>% 
-                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, exterior, interior, 
+                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
                                                hasFireplace, hasGarage, stories, area, view))
 
 summary(reg1)
 ```
 
-
-```{r}
-reg2 <- lm(sale_price ~ ., data = tr_processed_reg %>% 
-                                 dplyr::select(sale_price,building_code_description_new, Age, numRooms, hasBasement, hasAC, interior, exterior, hasHeater,hasFireplace, hasGarage, area))
-
-summary(reg2)
-```
 
 ```{r}
 
@@ -125,31 +127,19 @@ summary(anova_result)
 
 
 ```{r}
-vif(reg2)
-```
-
-
-```{r}
-step(reg2)
+vif(reg1)
 ```
 
 
 
 ```{r}
-residuals_df <- data.frame(Residuals = resid(reg4), Fitted = fitted(reg4))
+residuals_df <- data.frame(Residuals = resid(reg3), Fitted = fitted(reg3))
 ggplot(residuals_df, aes(x = Fitted, y = Residuals)) +
   geom_point() +
   geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
   labs(x = "Fitted Values", y = "Residuals", title = "Residual Plot")
 ```
 
-
-
-```{r}
-tr_processed %>% 
-  group_by(building_code_description_new) %>% 
-  summarise(n())
-```
 
 ```{r}
 
@@ -160,16 +150,15 @@ tr_neigh <- st_join(tr_processed, neighborhood %>% select(NAME))
 
 ```{r}
 
-reg3 <- lm(sale_price ~ ., data = tr_neigh %>% st_drop_geometry() %>% 
-                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, interior, exterior, hasHeater,hasFireplace, hasGarage, area, NAME))
+reg2 <- lm(sale_price ~ ., data = tr_neigh %>% st_drop_geometry() %>% 
+                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
+                                               hasFireplace, hasGarage, stories, area, view, NAME))
 
-summary(reg3)
+summary(reg2)
 ```
 ```{r}
-vif(reg3)
+vif(reg2)
 ```
-
-
 
 
 ```{r}
@@ -177,27 +166,179 @@ assault <- crime %>%
   filter(text_gener == "Aggravated Assault Firearm" | text_gener == "Aggravated Assault No Firearm") %>% 
   dplyr::select(point_x, point_y) %>%
     na.omit()
-```
 
-
-```{r}
 tr_neigh <-
   tr_neigh %>% 
     mutate(crime_nn3 = nn_function(st_coordinates(tr_neigh), 
                               st_coordinates(assault), k = 3))
+tr_neigh$crimes.Buffer <- tr_neigh %>% 
+    st_buffer(660) %>% 
+    aggregate(mutate(assault, counter = 1),., sum) %>%
+    pull(counter)
 ```
 
 
 ```{r}
-reg4 <- lm(sale_price ~ ., data = tr_neigh %>% st_drop_geometry() %>% 
-                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, interior, exterior, hasHeater,hasFireplace, hasGarage, area, NAME, crime_nn3, building_code_description_new, stories, view))
+schools <- st_read("/Users/emzhou/Documents/GitHub/MUSA5080-Philly-ML/data/school.geojson") %>% 
+  filter(GRADE_ORG == "K-12" | GRADE_ORG == "9-12") %>%  
+  filter(TYPE_SPECIFIC == "PRIVATE") %>% 
+  st_transform('ESRI:102728')
 
-summary(reg4)
+
+tr_neigh <-
+  tr_neigh %>% 
+    mutate(schools_nn1 = nn_function(st_coordinates(tr_neigh), 
+                              st_coordinates(schools), k = 1))
+
 ```
+
 
 ```{r}
-vif(reg4)
+
+tr_neigh <-
+  tr_neigh %>% 
+    mutate(hospitals_nn1 = nn_function(st_coordinates(tr_neigh), 
+                              st_coordinates(hospital), k = 1))
 ```
+
+
+```{r}
+el <- st_read("https://opendata.arcgis.com/datasets/8c6e2575c8ad46eb887e6bb35825e1a6_0.geojson")
+Broad_St <- st_read("https://opendata.arcgis.com/datasets/2e9037fd5bef406488ffe5bb67d21312_0.geojson")
+
+septaStops <- 
+  rbind(
+     el %>% 
+      mutate(Line = "El") %>%
+      dplyr::select(Station, Line),
+     Broad_St %>%
+      mutate(Line ="Broad_St") %>%
+      dplyr::select(Station, Line)) %>%
+  st_transform('ESRI:102728')
+  
+
+test <- tr_neigh %>% 
+  st_intersection(st_buffer(septaStops, 3000)) %>% 
+  st_drop_geometry() %>% 
+  group_by(parcel_number) %>% 
+  summarize(
+    totalstops = n())
+
+tr_neigh <- tr_neigh %>% 
+  left_join(test, by = "parcel_number") %>% 
+  
+tr_neigh <- tr_neigh %>% 
+  mutate(totalstops = ifelse(is.na(totalstops), 0, totalstops))
+  
+```
+
+
+```{r}
+summary(tr_neigh$Age)
+hist(tr_neigh$numRooms, main = "Histogram", xlab = "Variable Name")
+  
+tr_neigh$logarea <- log(tr_neigh$area)
+#tr_neigh$logcrimes <- log(tr_neigh$crimes.Buffer)
+#tr_neigh$logschool <- log(tr_neigh$schools_nn1)
+#tr_neigh$logrooms <- log(tr_neigh$numRooms)
+
+#tr_neigh <- tr_neigh %>% 
+  #mutate(logrooms = ifelse(is.infinite(logrooms), 0, logrooms))
+
+```
+
+
+```{r}
+reg3 <- lm(sale_price ~ ., data = tr_neigh %>% st_drop_geometry() %>% 
+                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
+                                               hasFireplace, hasGarage, stories, logarea, view, NAME, crimes.Buffer, totalstops, hospitals_nn1, schools_nn1))
+summary(reg3)
+```
+
+
+```{r}
+vif(reg3)
+```
+
+
+```{r}
+set.seed(244) # 40
+inTrain <- createDataPartition(
+   y = paste(tr_neigh$NAME, tr_neigh$hasBasement, tr_neigh$hasAC, tr_neigh$quality, tr_neigh$buildingdis, tr_neigh$hasFireplace, tr_neigh$hasGarage, tr_neigh$stories, tr_neigh$view
+                        ),
+              p = .60, list = FALSE)
+
+tr_neigh.training <- tr_neigh[inTrain,] 
+tr_neigh.test <- tr_neigh[-inTrain,]  
+
+reg.train <- lm(sale_price ~ ., data = tr_neigh.training %>% st_drop_geometry() %>% 
+                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
+                                               hasFireplace, hasGarage, stories, logarea, view, NAME, crimes.Buffer, totalstops, hospitals_nn1, schools_nn1))
+
+tr_neigh.test <- tr_neigh.test %>% 
+  filter(NAME %in% c("BLUE BELL HILL", "BYBERRY", "HUNTING PARK INDUSTRIAL AREA", "SHAWMONT VALLEY", "NORMANDY") == FALSE)
+
+
+tr_neigh.test <- 
+  tr_neigh.test %>% 
+  mutate(SalePrice.Predict = predict(reg.train, tr_neigh.test),
+         SalePrice.Error = SalePrice.Predict - sale_price,
+         SalePrice.AbsError = abs(SalePrice.Predict - sale_price),
+         SalePrice.APE = (abs(SalePrice.Predict - sale_price)) / SalePrice.Predict)
+
+```
+
+
+```{r}
+mean(tr_neigh.test$SalePrice.APE, na.rm = T)
+
+```
+
+
+```{r}
+summary(reg.train)
+```
+
+
+```{r}
+options(tigris_class = "sf")
+library(tidycensus)
+library(svDialogs)
+census_api_key(dlgInput(
+  "Enter a Census API Key", # ask for an api key
+  Sys.getenv("CENSUS_API_KEY")
+)$res,
+overwrite = TRUE)
+
+
+tracts20 <- 
+  get_acs(geography = "tract", 
+          variables = c("B02001_001E", # total population
+            "B02001_002E", # white population
+            "B02001_003E", # black population
+            "B02001_005E", # asian population
+            "B03002_012E"), 
+          year=2020, state=42, county=101, 
+          geometry=TRUE, output="wide") %>%
+  st_transform('ESRI:102728') %>% 
+  rename(TotalPop = B02001_001E, 
+         Whites = B02001_002E,
+         African_Americans = B02001_003E,
+         Asians = B02001_005E,
+         Latinx = B03002_012E) %>% 
+  mutate(pctMinority = ifelse(TotalPop > 0, (African_Americans + Asians + Latinx ) / TotalPop, 0))
+  
+```
+
+
+
+
+
+
+
+
+
+## Getis Ord
 
 
 ```{r}
@@ -259,11 +400,21 @@ scale_fill_gradient2()  + theme_dark()
 
 
 ```{r}
-training %>% 
-  filter(sale_price < 2000000) %>% 
-  ggplot(aes(x = sale_price)) +
-  geom_histogram(bins = 20) +
+tr_neigh %>% 
+  ggplot(aes(x = buildingdis)) +
+  geom_bar() +
   labs(title = "Histogram Example", x = "X-Axis Label", y = "Frequency")
 ```
 
+```{r}
+tr_neigh.test %>% 
+  group_by(NAME) %>% 
+  summarise(count = n()) %>% 
+  filter(count == 1)
+```
+
+
+```{r}
+summary(tr_processed$off_street_open)
+```
 
