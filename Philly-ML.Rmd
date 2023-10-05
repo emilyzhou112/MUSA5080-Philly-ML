@@ -9,13 +9,16 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-
-```{r}
+# Data and Library
+```{r libraries}
 library(sf)
 library(tidyverse)
 library(spdep)
+library(sfdep)
 library(caret)
+library(car)
 library(ckanr)
+library(svDialogs)
 library(FNN)
 library(grid)
 library(gridExtra)
@@ -25,21 +28,50 @@ library(kableExtra)
 library(jtools)     # for regression model plots
 library(ggstance) # to support jtools plots
 library(ggpubr)    # plotting R^2 value on ggplot point scatter
-library(broom.mixed) # needed for effects plots
+library(broom.mixed)# needed for effects plots
 
 source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
-
-
-data <- st_read("/Users/emzhou/Documents/Fall2023/MUSA-PPA/Wk4/studentData.geojson")
-training <- data %>% filter(toPredict != "CHALLENGE") %>% st_transform('ESRI:102728')
-crime <- st_read("/Users/emzhou/Documents/GitHub/MUSA5080-Philly-ML/data/crime.geojson") %>% st_transform('ESRI:102728')
-hospital <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/Hospitals.geojson") %>% st_transform('ESRI:102728')
-neighborhood <- st_read("/Users/emzhou/Documents/GitHub/MUSA5080-Philly-ML/data/neighborhood.geojson") %>% st_transform('ESRI:102728')
 
 ```
 
 
-```{r process age and price}
+```{r data}
+
+data <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/studentData.geojson")
+training <- data %>% filter(toPredict != "CHALLENGE") %>% st_transform('ESRI:102728')
+
+crime <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/crime.geojson") %>% st_transform('ESRI:102728')
+
+hospital <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/Hospitals.geojson") %>% st_transform('ESRI:102728')
+
+neighborhood <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/neighborhood.geojson") %>% st_transform('ESRI:102728')
+
+el <- st_read("https://opendata.arcgis.com/datasets/8c6e2575c8ad46eb887e6bb35825e1a6_0.geojson")
+Broad_St <- st_read("https://opendata.arcgis.com/datasets/2e9037fd5bef406488ffe5bb67d21312_0.geojson")
+
+schools <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/school.geojson") %>% st_transform('ESRI:102728')
+
+
+
+```
+
+# Pre-Process
+Here we need to do a bunch of checking work to explain our rational behind selecting these variables
+
+```{r variables checking}
+
+anova_result <- aov(tr_processed$sale_price ~ as.factor(tr_processed$basements))
+summary(anova_result)
+
+
+tr_neigh %>% 
+  ggplot(aes(x = basements)) +
+  geom_bar() +
+  labs(title = "Histogram Example", x = "X-Axis Label", y = "Frequency")
+
+```
+
+```{r process predictors}
 
 tr_processed <- training %>% 
   mutate(Age = 2023 - year_built) %>% 
@@ -47,31 +79,13 @@ tr_processed <- training %>%
   filter(sale_price < 2000000) %>% 
   mutate(numRooms = number_of_bedrooms + number_of_bathrooms) %>% 
   filter(numRooms < 30) %>% 
-  filter(total_livable_area != 0 & is.na(total_area) == FALSE)
-  
-```
-
-```{r process basement}
-tr_processed <- tr_processed %>% 
-   mutate(hasBasement = case_when(
-    basements %in% c("1", "4", "A", "B", "C", "D", "E", "F") ~ "Y",
-    TRUE~ "N"
-  ))
-  
-```
-
-```{r}
-
-tr_processed <- tr_processed %>% 
+  filter(total_livable_area != 0 & is.na(total_area) == FALSE) %>% 
   mutate(hasAC = case_when(
          central_air %in% c("1", "Y") ~ "Y",
          TRUE~ "N"),
-         exterior = case_when(
-         exterior_condition == 1 |exterior_condition == 2| exterior_condition == 3| exterior_condition == 4   ~ "Good",
-         TRUE~ "Bad"),
-         interior = case_when(
-         interior_condition == 1 |interior_condition == 2| interior_condition == 3| interior_condition == 4   ~ "Good",
-         TRUE~ "Bad"),
+         hasBasement = case_when(
+         basements %in% c("1", "4", "A", "B", "C", "D", "E", "F") ~ "Y",
+         TRUE~ "N"),
          hasFireplace = case_when(
          fireplaces == 0 | is.na(fireplaces)  ~ "N",
          TRUE~ "Y"),
@@ -98,79 +112,166 @@ tr_processed <- tr_processed %>%
          buildingdis = case_when(
          grepl("ROW",building_code_description_new, ignore.case = FALSE) ~ "Row",
          grepl("TWIN",building_code_description_new, ignore.case = FALSE) ~ "TWIN",
-         TRUE~ "Other")
-  ) %>% 
-  filter(area < 50000)
+         TRUE~ "Other")) %>% 
+  filter(area < 50000) %>% 
+  mutate(logarea = log(area))
+
   
-  
+
 ```
 
+# Baseline Regression
 
+```{r base regression}
 
-```{r}
-
-tr_processed_reg <- tr_processed %>% st_drop_geometry()
-reg1 <- lm(sale_price ~ ., data = tr_processed_reg %>% 
+reg1 <- lm(sale_price ~ ., data = tr_processed %>% st_drop_geometry() %>% 
                                  dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
-                                               hasFireplace, hasGarage, stories, area, view))
+                                               hasFireplace, hasGarage, stories, logarea, view))
 
 summary(reg1)
 ```
 
 
-```{r}
 
-anova_result <- aov(tr_processed$sale_price ~ as.factor(tr_processed$building_code_description_new))
-summary(anova_result)
-
-```
-
-
-```{r}
+```{r check base regression colinearity}
 vif(reg1)
 ```
 
 
 
-```{r}
-residuals_df <- data.frame(Residuals = resid(reg3), Fitted = fitted(reg3))
+```{r residual plot baseline}
+residuals_df <- data.frame(Residuals = resid(reg1), Fitted = fitted(reg1))
 ggplot(residuals_df, aes(x = Fitted, y = Residuals)) +
   geom_point() +
   geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
   labs(x = "Fitted Values", y = "Residuals", title = "Residual Plot")
 ```
 
+```{r generalizability baseline}
 
-```{r}
+set.seed(215) # 256, # 212 # 215 # 208
+inTrain_base <- createDataPartition(
+   y = paste(tr_processed$hasBasement, tr_processed$hasAC, tr_processed$quality, tr_processed$buildingdis, tr_processed$hasFireplace, tr_processed$hasGarage, tr_processed$stories, tr_processed$view
+                        ),
+              p = .60, list = FALSE)
+
+tr_processed.training <- tr_processed[inTrain_base,] 
+tr_processed.test <- tr_processed[-inTrain_base,]  
+
+
+reg.train_base <- lm(sale_price ~ ., data = tr_processed.training %>% st_drop_geometry() %>% 
+                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
+                                               hasFireplace, hasGarage, stories, logarea, view))
+tr_processed.test <- 
+  tr_processed.test %>% 
+  mutate(SalePrice.Predict = predict(reg.train_base, tr_processed.test),
+         SalePrice.Error = SalePrice.Predict - sale_price,
+         SalePrice.AbsError = abs(SalePrice.Predict - sale_price),
+         SalePrice.APE = (abs(SalePrice.Predict - sale_price)) / SalePrice.Predict)
+```
+
+
+```{r basline MAPE}
+
+mean(tr_processed.test$SalePrice.APE, na.rm = T)
+
+```
+
+# Check Spatial Auto Correlation
+
+```{r Global G test}
+
+coords.test <-  st_coordinates(tr_processed.test) 
+neighborList.test <- knn2nb(knearneigh(coords.test, 5))
+spatialWeights.test <- nb2listw(neighborList.test, style="W")
+```
+
+```{r Global Moran I}
+moranTest <- moran.mc(tr_processed.test$SalePrice.Error, 
+                      spatialWeights.test, nsim = 999)
+
+ggplot(as.data.frame(moranTest$res[c(1:999)]), aes(moranTest$res[c(1:999)])) +
+  geom_histogram(binwidth = 0.01) +
+  geom_vline(aes(xintercept = moranTest$statistic), colour = "#FA7800",size=1) +
+  scale_x_continuous(limits = c(-1, 1)) +
+  labs(title="Observed and permuted Moran's I",
+       subtitle= "Observed Moran's I in orange",
+       x="Moran's I",
+       y="Count") +
+  plotTheme()
+
+```
+
+
+
+```{r block group and sale price}
+
+block <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/Census_Blocks_2010.geojson") %>% st_transform('ESRI:102728')
+
+tr_block <- st_join(tr_processed, block %>% select(GEOID10))
+
+gi_data <- tr_block %>% 
+  st_drop_geometry() %>% 
+  select(GEOID10, sale_price) %>% 
+  group_by(GEOID10) %>% 
+  summarize(mean_sp = mean(sale_price)) %>% 
+  na.omit() %>% 
+  left_join(block) %>% 
+  st_sf()
+
+gi_data <- gi_data %>% 
+  st_make_valid()
+
+```
+
+
+```{r Getid Ord local G statistics}
+
+list_nb <- poly2nb(gi_data, queen = TRUE)
+
+empty_nb <- which(card(list_nb) == 0)
+   
+gi_subset <- gi_data[-empty_nb, ]
+
+neigh_nbs <- gi_subset %>% 
+  mutate(
+    nb = st_contiguity(geometry),        # neighbors share border/vertex
+    wt = st_weights(nb),                 # row-standardized weights
+    neigh_lag = st_lag(mean_sp, nb, wt)    # calculate spatial lag of TreEqty
+  )
+
+gi_hot_spots <- neigh_nbs %>% 
+  mutate(
+    Gi = local_g_perm(mean_sp, nb, wt, nsim = 999)
+    # nsim = number of Monte Carlo simulations (999 is default)
+  ) %>% 
+  unnest(Gi) 
+
+gi_hot_spots %>% 
+  ggplot((aes(fill = gi))) +
+  geom_sf(color = NA) +
+scale_fill_gradient2()  + theme_dark()
+```
+
+# Neighborhood Effect
+
+
+```{r bring in neighborhood}
 
 tr_neigh <- st_join(tr_processed, neighborhood %>% select(NAME))
 
 ```
 
 
-```{r}
 
-reg2 <- lm(sale_price ~ ., data = tr_neigh %>% st_drop_geometry() %>% 
-                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
-                                               hasFireplace, hasGarage, stories, area, view, NAME))
-
-summary(reg2)
-```
-```{r}
-vif(reg2)
-```
-
-
-```{r}
+```{r bring in assult}
 assault <- crime %>% 
   filter(text_gener == "Aggravated Assault Firearm" | text_gener == "Aggravated Assault No Firearm") %>% 
   dplyr::select(point_x, point_y) %>%
-    na.omit()
+  na.omit() %>% 
+  st_as_sf(coords = c("Long", "Lat"), crs = "EPSG:102728") %>%
+  distinct()
 
-tr_neigh <-
-  tr_neigh %>% 
-    mutate(crime_nn3 = nn_function(st_coordinates(tr_neigh), 
-                              st_coordinates(assault), k = 3))
 tr_neigh$crimes.Buffer <- tr_neigh %>% 
     st_buffer(660) %>% 
     aggregate(mutate(assault, counter = 1),., sum) %>%
@@ -178,12 +279,11 @@ tr_neigh$crimes.Buffer <- tr_neigh %>%
 ```
 
 
-```{r}
-schools <- st_read("/Users/emzhou/Documents/GitHub/MUSA5080-Philly-ML/data/school.geojson") %>% 
-  filter(GRADE_ORG == "K-12" | GRADE_ORG == "9-12") %>%  
-  filter(TYPE_SPECIFIC == "PRIVATE") %>% 
-  st_transform('ESRI:102728')
 
+```{r bring in school}
+schools <- schools %>% 
+  filter(GRADE_ORG == "K-12" | GRADE_ORG == "9-12") %>%  
+  filter(TYPE_SPECIFIC == "PRIVATE") 
 
 tr_neigh <-
   tr_neigh %>% 
@@ -193,7 +293,7 @@ tr_neigh <-
 ```
 
 
-```{r}
+```{r bring in hospital}
 
 tr_neigh <-
   tr_neigh %>% 
@@ -202,9 +302,8 @@ tr_neigh <-
 ```
 
 
-```{r}
-el <- st_read("https://opendata.arcgis.com/datasets/8c6e2575c8ad46eb887e6bb35825e1a6_0.geojson")
-Broad_St <- st_read("https://opendata.arcgis.com/datasets/2e9037fd5bef406488ffe5bb67d21312_0.geojson")
+```{r bring in transit stations}
+
 
 septaStops <- 
   rbind(
@@ -217,7 +316,7 @@ septaStops <-
   st_transform('ESRI:102728')
   
 
-test <- tr_neigh %>% 
+joinstops <- tr_neigh %>% 
   st_intersection(st_buffer(septaStops, 3000)) %>% 
   st_drop_geometry() %>% 
   group_by(parcel_number) %>% 
@@ -225,7 +324,7 @@ test <- tr_neigh %>%
     totalstops = n())
 
 tr_neigh <- tr_neigh %>% 
-  left_join(test, by = "parcel_number") %>% 
+  left_join(joinstops, by = "parcel_number") 
   
 tr_neigh <- tr_neigh %>% 
   mutate(totalstops = ifelse(is.na(totalstops), 0, totalstops))
@@ -233,74 +332,7 @@ tr_neigh <- tr_neigh %>%
 ```
 
 
-```{r}
-summary(tr_neigh$Age)
-hist(tr_neigh$numRooms, main = "Histogram", xlab = "Variable Name")
-  
-tr_neigh$logarea <- log(tr_neigh$area)
-#tr_neigh$logcrimes <- log(tr_neigh$crimes.Buffer)
-#tr_neigh$logschool <- log(tr_neigh$schools_nn1)
-#tr_neigh$logrooms <- log(tr_neigh$numRooms)
-
-#tr_neigh <- tr_neigh %>% 
-  #mutate(logrooms = ifelse(is.infinite(logrooms), 0, logrooms))
-
-```
-
-
-```{r}
-reg3 <- lm(sale_price ~ ., data = tr_neigh %>% st_drop_geometry() %>% 
-                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
-                                               hasFireplace, hasGarage, stories, logarea, view, NAME, crimes.Buffer, totalstops, hospitals_nn1, schools_nn1))
-summary(reg3)
-```
-
-
-```{r}
-vif(reg3)
-```
-
-
-```{r}
-set.seed(244) # 40
-inTrain <- createDataPartition(
-   y = paste(tr_neigh$NAME, tr_neigh$hasBasement, tr_neigh$hasAC, tr_neigh$quality, tr_neigh$buildingdis, tr_neigh$hasFireplace, tr_neigh$hasGarage, tr_neigh$stories, tr_neigh$view
-                        ),
-              p = .60, list = FALSE)
-
-tr_neigh.training <- tr_neigh[inTrain,] 
-tr_neigh.test <- tr_neigh[-inTrain,]  
-
-reg.train <- lm(sale_price ~ ., data = tr_neigh.training %>% st_drop_geometry() %>% 
-                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
-                                               hasFireplace, hasGarage, stories, logarea, view, NAME, crimes.Buffer, totalstops, hospitals_nn1, schools_nn1))
-
-tr_neigh.test <- tr_neigh.test %>% 
-  filter(NAME %in% c("BLUE BELL HILL", "BYBERRY", "HUNTING PARK INDUSTRIAL AREA", "SHAWMONT VALLEY", "NORMANDY") == FALSE)
-
-
-tr_neigh.test <- 
-  tr_neigh.test %>% 
-  mutate(SalePrice.Predict = predict(reg.train, tr_neigh.test),
-         SalePrice.Error = SalePrice.Predict - sale_price,
-         SalePrice.AbsError = abs(SalePrice.Predict - sale_price),
-         SalePrice.APE = (abs(SalePrice.Predict - sale_price)) / SalePrice.Predict)
-
-```
-
-
-```{r}
-mean(tr_neigh.test$SalePrice.APE, na.rm = T)
-
-```
-
-
-```{r}
-summary(reg.train)
-```
-
-
-```{r}
+```{r bring in race}
 options(tigris_class = "sf")
 library(tidycensus)
 library(svDialogs)
@@ -326,95 +358,113 @@ tracts20 <-
          African_Americans = B02001_003E,
          Asians = B02001_005E,
          Latinx = B03002_012E) %>% 
-  mutate(pctMinority = ifelse(TotalPop > 0, (African_Americans + Asians + Latinx ) / TotalPop, 0))
+  mutate(pctMinority = ifelse(TotalPop > 0, (African_Americans + Asians + Latinx ) / TotalPop, 0), 
+         majority = ifelse(pctMinority > 0.5, "minority", "majority"))
   
 ```
 
 
-
-
-
-
-
-
-
-## Getis Ord
-
-
 ```{r}
 
-tract <- st_read("/Users/emzhou/Documents/GitHub/MUSA5080-Philly-ML/data/Census_Blocks_2010.geojson") %>% st_transform('ESRI:102728')
-
-tr_tract <- st_join(tr_processed, tract %>% select(GEOID10))
-
-gi_data <- tr_tract %>% 
+joinrace <- tr_neigh %>% 
+  st_intersection(tracts20 %>% select(pctMinority)) %>% 
   st_drop_geometry() %>% 
-  select(GEOID10, sale_price) %>% 
-  group_by(GEOID10) %>% 
-  summarize(mean_sp = mean(sale_price)) %>% 
-  na.omit() %>% 
-  left_join(tract) %>% 
-  st_sf()
+  group_by(parcel_number) %>% 
+  summarize(
+    meanMinor = mean(pctMinority))
 
-gi_data <- gi_data %>% 
-  st_make_valid()
+tr_neigh <- tr_neigh %>% 
+  left_join(joinrace, by = "parcel_number") 
+```
+
+
+```{r neighborhood regression}
+reg2 <- lm(sale_price ~ ., data = tr_neigh %>% st_drop_geometry() %>% 
+                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
+                                               hasFireplace, hasGarage, stories, logarea, view, NAME, crimes.Buffer, totalstops, hospitals_nn1, schools_nn1, meanMinor))
+summary(reg2)
+```
+
+
+```{r check neighborhood regression colinearity}
+vif(reg2)
+```
+
+
+```{r generalizability neighborhood}
+
+set.seed(215) # 256,  # 215 # 208
+inTrain <- createDataPartition(
+   y = paste(tr_neigh$NAME, tr_neigh$hasBasement, tr_neigh$hasAC, tr_neigh$quality, tr_neigh$buildingdis, tr_neigh$hasFireplace, tr_neigh$hasGarage, tr_neigh$stories, tr_neigh$view
+                        ),
+              p = .60, list = FALSE)
+
+tr_neigh.training <- tr_neigh[inTrain,] 
+tr_neigh.test <- tr_neigh[-inTrain,]  
+
+reg.train <- lm(sale_price ~ ., data = tr_neigh.training %>% st_drop_geometry() %>% 
+                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
+                                               hasFireplace, hasGarage, stories, logarea, view, NAME, crimes.Buffer, totalstops, hospitals_nn1, schools_nn1, meanMinor))
+
+tr_neigh.test <- tr_neigh.test %>% 
+  filter(NAME %in% c("BLUE BELL HILL", "BYBERRY", "HUNTING PARK INDUSTRIAL AREA", "SHAWMONT VALLEY", "NORMANDY") == FALSE)
+
+
+tr_neigh.test <- 
+  tr_neigh.test %>% 
+  mutate(SalePrice.Predict = predict(reg.train, tr_neigh.test),
+         SalePrice.Error = SalePrice.Predict - sale_price,
+         SalePrice.AbsError = abs(SalePrice.Predict - sale_price),
+         SalePrice.APE = (abs(SalePrice.Predict - sale_price)) / SalePrice.Predict)
 
 ```
+
+```{r neighborhood AE}
+mean(tr_neigh.test$SalePrice.AbsError, na.rm = T)
+```
+
+
+
+```{r neighborhood MAPE}
+mean(tr_neigh.test$SalePrice.APE, na.rm = T)
+
+```
+
+
+```{r cross validation}
+
+fitControl <- trainControl(method = "cv", number = 100)
+set.seed(215)
+
+reg.cv <- 
+  train(sale_price ~ ., data = st_drop_geometry(tr_neigh) %>% 
+                             dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
+                                               hasFireplace, hasGarage, stories, logarea, view, NAME, crimes.Buffer, totalstops, hospitals_nn1, schools_nn1, meanMinor), 
+     method = "lm", trControl = fitControl, na.action = na.pass)
+
+reg.cv
+```
+
+
 
 ```{r}
-
-list_nb <- poly2nb(gi_data, queen = TRUE)
-
-
-empty_nb <- which(card(list_nb) == 0)
-empty_nb   
-
-gi_subset <- gi_data[-empty_nb, ]
-
-neigh_nbs <- gi_subset %>% 
-  mutate(
-    nb = st_contiguity(geometry),        # neighbors share border/vertex
-    wt = st_weights(nb),                 # row-standardized weights
-    neigh_lag = st_lag(mean_sp, nb, wt)    # calculate spatial lag of TreEqty
-  )
-
-gi_hot_spots <- neigh_nbs %>% 
-  mutate(
-    Gi = local_g_perm(mean_sp, nb, wt, nsim = 999)
-    # nsim = number of Monte Carlo simulations (999 is default)
-  ) %>% 
-  unnest(Gi) 
-
-
+mean(reg.cv$resample[,3])
 ```
 
 
 
 ```{r}
-gi_hot_spots |> 
-  ggplot((aes(fill = gi))) +
-  geom_sf(color = NA) +
-scale_fill_gradient2()  + theme_dark()
-```
-
-
-
-```{r}
-tr_neigh %>% 
-  ggplot(aes(x = buildingdis)) +
-  geom_bar() +
-  labs(title = "Histogram Example", x = "X-Axis Label", y = "Frequency")
-```
-
-```{r}
-tr_neigh.test %>% 
-  group_by(NAME) %>% 
-  summarise(count = n()) %>% 
-  filter(count == 1)
+sd(reg.cv$resample[,3])
 ```
 
 
 ```{r}
-summary(tr_processed$off_street_open)
+hist(reg.cv$resample[,3], main = "Histogram", xlab = "Variable Name")
 ```
+
+
+
+
+
+
 
