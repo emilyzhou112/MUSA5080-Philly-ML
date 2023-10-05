@@ -11,26 +11,30 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Data and Library
 ```{r libraries}
-library(sf)
-library(tidyverse)
-library(spdep)
-library(sfdep)
-library(caret)
-library(car)
-library(ckanr)
-library(svDialogs)
-library(FNN)
-library(grid)
-library(gridExtra)
-library(ggcorrplot) # plot correlation plot
-library(corrr)      # another way to plot correlation plot
-library(kableExtra)
-library(jtools)     # for regression model plots
-library(ggstance) # to support jtools plots
-library(ggpubr)    # plotting R^2 value on ggplot point scatter
-library(broom.mixed)# needed for effects plots
 
+
+# list of required packages
+packages <- c( "tidyverse", "ggplot2", "svDialogs", "tidycensus", "sf", "knitr", "rmarkdown", "kableExtra", "stringr", "spdep", "sfdep", "caret", "car", "ckanr", "FNN", "grid", "gridExtra", "ggcorrplot", "corrr", "jtools", "ggstance", "ggpubr", "broom.mixed")
+
+# install and load required packages
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE, quietly=TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+
+# global options 
+options(scipen=999)
+options(tigris_class = "sf")
+options(digits = 3)
+
+# load in multiple ring buffer function
 source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
+
 
 ```
 
@@ -333,9 +337,7 @@ tr_neigh <- tr_neigh %>%
 
 
 ```{r bring in race}
-options(tigris_class = "sf")
-library(tidycensus)
-library(svDialogs)
+
 census_api_key(dlgInput(
   "Enter a Census API Key", # ask for an api key
   Sys.getenv("CENSUS_API_KEY")
