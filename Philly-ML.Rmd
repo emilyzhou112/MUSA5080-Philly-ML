@@ -10,6 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 # Data and Library
+
 ```{r libraries}
 
 
@@ -41,26 +42,48 @@ source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-L
 
 ```{r data}
 
-data <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/studentData.geojson")
-training <- data %>% filter(toPredict != "CHALLENGE") %>% st_transform('ESRI:102728')
+training <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/studentData.geojson") %>% st_transform('ESRI:102728')
+# training <- data %>% filter(toPredict != "CHALLENGE") %>% st_transform('ESRI:102728')
 
 crime <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/crime.geojson") %>% st_transform('ESRI:102728')
 
 hospital <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/Hospitals.geojson") %>% st_transform('ESRI:102728')
-
-neighborhood <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/neighborhood.geojson") %>% st_transform('ESRI:102728')
 
 el <- st_read("https://opendata.arcgis.com/datasets/8c6e2575c8ad46eb887e6bb35825e1a6_0.geojson")
 Broad_St <- st_read("https://opendata.arcgis.com/datasets/2e9037fd5bef406488ffe5bb67d21312_0.geojson")
 
 schools <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/school.geojson") %>% st_transform('ESRI:102728')
 
+shopping <- st_read("https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/Commercial_Corridors/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson") %>% st_transform('ESRI:102728') 
 
-
+dst<- st_read("https://opendata.arcgis.com/datasets/0960ea0f38f44146bb562f2b212075aa_0.geojson")%>%
+  st_transform('ESRI:102728') 
 ```
 
+Report Outline 
+
+- What variables in this data set that might be related to sale price? 
+- What additional variables might be related to sale price? 
+- Let's look at variables from the provided data set that we will use to fit a baseline regression first. Among which of these variables have we selected to put into regression, considering that some of these variables will be inherently related, and some of them will require additional manipulations, some of them needs to be included/excluded, etc. do data manipulations and processing
+- 
+
+- Summary table for all of the numeric variables
+- Summary table for all of the categorical variables 
+- scatterplot for numeric variables, do cor test
+- histograms for categorical variables, do anova test
+
 # Pre-Process
-Here we need to do a bunch of checking work to explain our rational behind selecting these variables
+
+
+Briefly describe your methods for gathering the data (only baseline regression data) and selecting variables 
+Present a table of summary statistics with variable descriptions. Sort these variables by their category (internal characteristics, amenities/public services or spatial structure). Check out the `stargazer` package for this.
+
+Present a correlation matrix for only numeric variables (later)
+
+4 home price correlation scatterplots
+
+Develop 1 map of your dependent variable (sale price)
+Develop 3 maps of 3 of your most interesting independent variables. (save maps for later analysis)
 
 ```{r variables checking}
 
@@ -75,15 +98,16 @@ tr_neigh %>%
 
 ```
 
+
 ```{r process predictors}
 
 tr_processed <- training %>% 
   mutate(Age = 2023 - year_built) %>% 
-  filter(Age < 500) %>% 
-  filter(sale_price < 2000000) %>% 
-  mutate(numRooms = number_of_bedrooms + number_of_bathrooms) %>% 
-  filter(numRooms < 30) %>% 
-  filter(total_livable_area != 0 & is.na(total_area) == FALSE) %>% 
+  mutate(numRooms = case_when(
+         is.na(number_of_bedrooms) & !is.na(number_of_bedrooms) ~ number_of_bathrooms,
+         is.na(number_of_bathrooms) & !is.na(number_of_bedrooms) ~ number_of_bedrooms,
+         is.na(number_of_bathrooms) & is.na(number_of_bedrooms) ~ 0,
+         TRUE~ number_of_bedrooms + number_of_bathrooms) )%>% 
   mutate(hasAC = case_when(
          central_air %in% c("1", "Y") ~ "Y",
          TRUE~ "N"),
@@ -117,18 +141,30 @@ tr_processed <- training %>%
          grepl("ROW",building_code_description_new, ignore.case = FALSE) ~ "Row",
          grepl("TWIN",building_code_description_new, ignore.case = FALSE) ~ "TWIN",
          TRUE~ "Other")) %>% 
-  filter(area < 50000) %>% 
   mutate(logarea = log(area))
 
   
 
 ```
 
+
+
 # Baseline Regression
+
+```{r}
+baseline <- tr_processed %>% 
+  filter(toPredict != "CHALLENGE") %>%
+  filter(Age < 500) %>% 
+  filter(sale_price < 2000000) %>% 
+  filter(numRooms < 30) %>% 
+  filter(total_livable_area != 0 & is.na(total_area) == FALSE) %>% 
+  filter(area < 50000) 
+```
+
 
 ```{r base regression}
 
-reg1 <- lm(sale_price ~ ., data = tr_processed %>% st_drop_geometry() %>% 
+reg1 <- lm(sale_price ~ ., data = baseline %>% st_drop_geometry() %>% 
                                  dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
                                                hasFireplace, hasGarage, stories, logarea, view))
 
@@ -153,14 +189,13 @@ ggplot(residuals_df, aes(x = Fitted, y = Residuals)) +
 
 ```{r generalizability baseline}
 
-set.seed(215) # 256, # 212 # 215 # 208
+set.seed(311) # 256, # 212 # 215 # 208
 inTrain_base <- createDataPartition(
-   y = paste(tr_processed$hasBasement, tr_processed$hasAC, tr_processed$quality, tr_processed$buildingdis, tr_processed$hasFireplace, tr_processed$hasGarage, tr_processed$stories, tr_processed$view
-                        ),
+   y = paste(baseline$hasBasement, baseline$hasAC, baseline$quality, baseline$buildingdis, baseline$hasFireplace, baseline$hasGarage, baseline$stories, baseline$view),
               p = .60, list = FALSE)
 
-tr_processed.training <- tr_processed[inTrain_base,] 
-tr_processed.test <- tr_processed[-inTrain_base,]  
+tr_processed.training <- baseline[inTrain_base,] 
+tr_processed.test <- baseline[-inTrain_base,]  
 
 
 reg.train_base <- lm(sale_price ~ ., data = tr_processed.training %>% st_drop_geometry() %>% 
@@ -262,7 +297,8 @@ scale_fill_gradient2()  + theme_dark()
 
 ```{r bring in neighborhood}
 
-tr_neigh <- st_join(tr_processed, neighborhood %>% select(NAME))
+tr_neigh <- st_intersection(tr_processed, dst %>% dplyr::select("DIST_NAME"))
+
 
 ```
 
@@ -279,7 +315,9 @@ assault <- crime %>%
 tr_neigh$crimes.Buffer <- tr_neigh %>% 
     st_buffer(660) %>% 
     aggregate(mutate(assault, counter = 1),., sum) %>%
-    pull(counter)
+    pull(counter) 
+  tr_neigh$crimes.Buffer[is.na(tr_neigh$crimes.Buffer)] <- 0
+
 ```
 
 
@@ -289,10 +327,24 @@ schools <- schools %>%
   filter(GRADE_ORG == "K-12" | GRADE_ORG == "9-12") %>%  
   filter(TYPE_SPECIFIC == "PRIVATE") 
 
-tr_neigh <-
-  tr_neigh %>% 
-    mutate(schools_nn1 = nn_function(st_coordinates(tr_neigh), 
-                              st_coordinates(schools), k = 1))
+school_buffer <-
+  schools %>%
+  dplyr::select(geometry) %>%
+  st_transform('ESRI:102728') %>%
+    na.omit() 
+
+tr_neigh$school_buffer <- 
+    tr_neigh$geometry %>% 
+    st_buffer(5280) %>% 
+    aggregate(mutate(school_buffer, counter = 1),., sum) %>%
+    pull(counter)
+
+tr_neigh$school_buffer[is.na(tr_neigh$school_buffer)] <- 0
+
+#tr_neigh <-
+  #tr_neigh %>% 
+    #mutate(schools_nn1 = nn_function(st_coordinates(tr_neigh), 
+                              #st_coordinates(schools), k = 1))
 
 ```
 
@@ -304,6 +356,18 @@ tr_neigh <-
     mutate(hospitals_nn1 = nn_function(st_coordinates(tr_neigh), 
                               st_coordinates(hospital), k = 1))
 ```
+
+
+```{r bring in shops}
+
+shops <- st_centroid(shopping) %>% dplyr::select("OBJECTID", "geometry")
+
+tr_neigh <-
+  tr_neigh %>% 
+    mutate(shops_nn3 = nn_function(st_coordinates(tr_neigh), 
+                              st_coordinates(shops), k = 3))
+```
+
 
 
 ```{r bring in transit stations}
@@ -379,11 +443,24 @@ tr_neigh <- tr_neigh %>%
   left_join(joinrace, by = "parcel_number") 
 ```
 
+```{r}
+
+neighboreffect <- tr_neigh %>% 
+  filter(toPredict != "CHALLENGE") %>%
+  filter(Age < 500 & Age > -1) %>% 
+  filter(sale_price < 2000000) %>% 
+  filter(numRooms < 30) %>% 
+  filter(total_livable_area != 0 & is.na(total_area) == FALSE) %>% 
+  filter(area < 50000) 
+  
+```
+
+
 
 ```{r neighborhood regression}
-reg2 <- lm(sale_price ~ ., data = tr_neigh %>% st_drop_geometry() %>% 
+reg2 <- lm(sale_price ~ ., data = neighboreffect %>% st_drop_geometry() %>% 
                                  dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
-                                               hasFireplace, hasGarage, stories, logarea, view, NAME, crimes.Buffer, totalstops, hospitals_nn1, schools_nn1, meanMinor))
+                                               hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor))
 summary(reg2)
 ```
 
@@ -393,23 +470,28 @@ vif(reg2)
 ```
 
 
+
 ```{r generalizability neighborhood}
 
-set.seed(215) # 256,  # 215 # 208
-inTrain <- createDataPartition(
-   y = paste(tr_neigh$NAME, tr_neigh$hasBasement, tr_neigh$hasAC, tr_neigh$quality, tr_neigh$buildingdis, tr_neigh$hasFireplace, tr_neigh$hasGarage, tr_neigh$stories, tr_neigh$view
-                        ),
-              p = .60, list = FALSE)
 
-tr_neigh.training <- tr_neigh[inTrain,] 
-tr_neigh.test <- tr_neigh[-inTrain,]  
+set.seed(485) # 256,  # 215 # 208 # 123 # 666 # 352
+
+inTrain <- createDataPartition(
+    y = paste(neighboreffect$DIST_NAME, neighboreffect$hasBasement, neighboreffect$hasAC, neighboreffect$quality, neighboreffect$buildingdis, neighboreffect$hasFireplace, neighboreffect$hasGarage, neighboreffect$stories, neighboreffect$view), 
+             p = .60, list = FALSE)
+
+
+tr_neigh.training <- neighboreffect[inTrain,] 
+tr_neigh.test <- neighboreffect[-inTrain,]  
 
 reg.train <- lm(sale_price ~ ., data = tr_neigh.training %>% st_drop_geometry() %>% 
                                  dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
-                                               hasFireplace, hasGarage, stories, logarea, view, NAME, crimes.Buffer, totalstops, hospitals_nn1, schools_nn1, meanMinor))
+                                               hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor))
 
-tr_neigh.test <- tr_neigh.test %>% 
-  filter(NAME %in% c("BLUE BELL HILL", "BYBERRY", "HUNTING PARK INDUSTRIAL AREA", "SHAWMONT VALLEY", "NORMANDY") == FALSE)
+
+
+#tr_neigh.test <- tr_neigh.test %>% 
+  #filter(NAME %in% c("BLUE BELL HILL", "BYBERRY", "HUNTING PARK INDUSTRIAL AREA", "SHAWMONT VALLEY", "NORMANDY") == FALSE)
 
 
 tr_neigh.test <- 
@@ -420,6 +502,7 @@ tr_neigh.test <-
          SalePrice.APE = (abs(SalePrice.Predict - sale_price)) / SalePrice.Predict)
 
 ```
+
 
 ```{r neighborhood AE}
 mean(tr_neigh.test$SalePrice.AbsError, na.rm = T)
@@ -436,12 +519,12 @@ mean(tr_neigh.test$SalePrice.APE, na.rm = T)
 ```{r cross validation}
 
 fitControl <- trainControl(method = "cv", number = 100)
-set.seed(215)
+set.seed(485)
 
 reg.cv <- 
-  train(sale_price ~ ., data = st_drop_geometry(tr_neigh) %>% 
+  train(sale_price ~ ., data = st_drop_geometry(neighboreffect) %>% 
                              dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
-                                               hasFireplace, hasGarage, stories, logarea, view, NAME, crimes.Buffer, totalstops, hospitals_nn1, schools_nn1, meanMinor), 
+                                               hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor), 
      method = "lm", trControl = fitControl, na.action = na.pass)
 
 reg.cv
@@ -465,6 +548,95 @@ hist(reg.cv$resample[,3], main = "Histogram", xlab = "Variable Name")
 ```
 
 
+```{r}
+
+set.seed(311)
+challenge <- tr_neigh %>% 
+  filter(toPredict == "CHALLENGE")
+
+PricePrediction <-
+  st_drop_geometry(challenge)%>%
+  mutate(prediction = predict(reg.train, challenge))%>%
+  dplyr::select(musaID, prediction)
+  
+# write.csv(PricePrediction,"RegressToImpress.csv", row.names = FALSE)
+```
+
+
+
+```{r}
+
+neighboreffect_nongeom <- neighboreffect %>% st_drop_geometry()
+neighboreffect_nongeom  <- neighboreffect_nongeom  %>%
+  dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor) %>% 
+    dplyr::select_if(is.numeric)
+
+stargazer(neighboreffect_nongeom, type = 'text', title= "Table 1: Summary Statistics")
+
+```
+
+
+```{r}
+varibles <- 
+  neighboreffect %>% 
+  dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor)
+
+vars <- select_if(st_drop_geometry(varibles), is.numeric) %>% na.omit()
+
+ggcorrplot(
+  round(cor(vars), 1), 
+  p.mat = cor_pmat(vars),
+  colors = c("#5F9EA0", "white", "#ff6347"),
+  type="lower",
+  insig = "blank") +  
+    labs(title = "Correlation") 
+```
+
+
+
+
+```{r}
+vars <- select_if(st_drop_geometry(varibles), negate(is.numeric)) %>% na.omit()
+vars %>% tbl_summary() %>% 	as_kable()
+
+
+
+```
+
+
+
+```{r, warning=FALSE}
+seed_values <- 100:500
+
+results <- numeric(length(seed_values))  
+
+for (i in 1:length(seed_values)) {
+  set.seed(seed_values[i])  
+  inTrain <- createDataPartition(
+    y = paste(neighboreffect$DIST_NAME, neighboreffect$hasBasement, neighboreffect$hasAC, neighboreffect$quality, neighboreffect$buildingdis, neighboreffect$hasFireplace, neighboreffect$hasGarage, neighboreffect$stories, neighboreffect$view), 
+    p = .60, list = FALSE)
+  
+  tr_neigh.training <- neighboreffect[inTrain,] 
+  tr_neigh.test <- neighboreffect[-inTrain,]  
+  
+  reg.train <- lm(sale_price ~ ., data = tr_neigh.training %>% st_drop_geometry() %>% 
+                     dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
+                                   hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor))
+  
+  
+  
+  tr_neigh.test <- 
+    tr_neigh.test %>% 
+    mutate(SalePrice.Predict = predict(reg.train, tr_neigh.test),
+           SalePrice.Error = SalePrice.Predict - sale_price,
+           SalePrice.AbsError = abs(SalePrice.Predict - sale_price),
+           SalePrice.APE = (abs(SalePrice.Predict - sale_price)) / SalePrice.Predict)
+  
+  results[i] <- mean(tr_neigh.test$SalePrice.APE, na.rm = TRUE) 
+}
+
+results
+```
 
 
 
