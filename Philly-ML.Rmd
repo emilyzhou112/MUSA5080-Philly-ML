@@ -15,7 +15,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 
 # list of required packages
-packages <- c( "tidyverse", "ggplot2", "svDialogs", "tidycensus", "sf", "knitr", "rmarkdown", "kableExtra", "stringr", "spdep", "sfdep", "caret", "car", "ckanr", "FNN", "grid", "gridExtra", "ggcorrplot", "corrr", "jtools", "ggstance", "ggpubr", "broom.mixed")
+packages <- c( "tidyverse", "ggplot2", "svDialogs", "tidycensus", "sf", "knitr", "rmarkdown", "kableExtra", "stringr", "spdep", "sfdep", "caret", "car", "ckanr", "FNN", "grid", "gridExtra", "ggcorrplot", "corrr", "jtools", "ggstance", "ggpubr", "broom.mixed", "stargazer", "gtsummary", "patchwork")
 
 # install and load required packages
 package.check <- lapply(
@@ -32,6 +32,8 @@ package.check <- lapply(
 options(scipen=999)
 options(tigris_class = "sf")
 options(digits = 3)
+
+palette5 <- c("#ffffcc","#a1dab4","#41b6c4","#2c7fb8","#253494")
 
 # load in multiple ring buffer function
 source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
@@ -187,9 +189,10 @@ ggplot(residuals_df, aes(x = Fitted, y = Residuals)) +
   labs(x = "Fitted Values", y = "Residuals", title = "Residual Plot")
 ```
 
+
 ```{r generalizability baseline}
 
-set.seed(311) # 256, # 212 # 215 # 208
+set.seed(485) 
 inTrain_base <- createDataPartition(
    y = paste(baseline$hasBasement, baseline$hasAC, baseline$quality, baseline$buildingdis, baseline$hasFireplace, baseline$hasGarage, baseline$stories, baseline$view),
               p = .60, list = FALSE)
@@ -203,7 +206,8 @@ reg.train_base <- lm(sale_price ~ ., data = tr_processed.training %>% st_drop_ge
                                                hasFireplace, hasGarage, stories, logarea, view))
 tr_processed.test <- 
   tr_processed.test %>% 
-  mutate(SalePrice.Predict = predict(reg.train_base, tr_processed.test),
+  mutate(Regression = "Base", 
+         SalePrice.Predict = predict(reg.train_base, tr_processed.test),
          SalePrice.Error = SalePrice.Predict - sale_price,
          SalePrice.AbsError = abs(SalePrice.Predict - sale_price),
          SalePrice.APE = (abs(SalePrice.Predict - sale_price)) / SalePrice.Predict)
@@ -289,7 +293,7 @@ gi_hot_spots <- neigh_nbs %>%
 gi_hot_spots %>% 
   ggplot((aes(fill = gi))) +
   geom_sf(color = NA) +
-scale_fill_gradient2()  + theme_dark()
+scale_fill_gradient2() + theme_void()
 ```
 
 # Neighborhood Effect
@@ -340,11 +344,6 @@ tr_neigh$school_buffer <-
     pull(counter)
 
 tr_neigh$school_buffer[is.na(tr_neigh$school_buffer)] <- 0
-
-#tr_neigh <-
-  #tr_neigh %>% 
-    #mutate(schools_nn1 = nn_function(st_coordinates(tr_neigh), 
-                              #st_coordinates(schools), k = 1))
 
 ```
 
@@ -474,7 +473,7 @@ vif(reg2)
 ```{r generalizability neighborhood}
 
 
-set.seed(485) # 256,  # 215 # 208 # 123 # 666 # 352
+set.seed(485) 
 
 inTrain <- createDataPartition(
     y = paste(neighboreffect$DIST_NAME, neighboreffect$hasBasement, neighboreffect$hasAC, neighboreffect$quality, neighboreffect$buildingdis, neighboreffect$hasFireplace, neighboreffect$hasGarage, neighboreffect$stories, neighboreffect$view), 
@@ -489,14 +488,10 @@ reg.train <- lm(sale_price ~ ., data = tr_neigh.training %>% st_drop_geometry() 
                                                hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor))
 
 
-
-#tr_neigh.test <- tr_neigh.test %>% 
-  #filter(NAME %in% c("BLUE BELL HILL", "BYBERRY", "HUNTING PARK INDUSTRIAL AREA", "SHAWMONT VALLEY", "NORMANDY") == FALSE)
-
-
 tr_neigh.test <- 
   tr_neigh.test %>% 
-  mutate(SalePrice.Predict = predict(reg.train, tr_neigh.test),
+  mutate(Regression = "Neighborhood Effects", 
+    SalePrice.Predict = predict(reg.train, tr_neigh.test),
          SalePrice.Error = SalePrice.Predict - sale_price,
          SalePrice.AbsError = abs(SalePrice.Predict - sale_price),
          SalePrice.APE = (abs(SalePrice.Predict - sale_price)) / SalePrice.Predict)
@@ -504,16 +499,17 @@ tr_neigh.test <-
 ```
 
 
-```{r neighborhood AE}
-mean(tr_neigh.test$SalePrice.AbsError, na.rm = T)
+```{r}
+tr_neigh.test %>% 
+  st_drop_geometry() %>%
+  summarise(MAE = mean(SalePrice.AbsError),
+            MAPE = mean(SalePrice.APE)*100) %>%
+  kbl(col.name=c('Mean Absolute Error','Mean Absolute Percentage Error')) %>%
+  kable_styling()
 ```
 
 
 
-```{r neighborhood MAPE}
-mean(tr_neigh.test$SalePrice.APE, na.rm = T)
-
-```
 
 
 ```{r cross validation}
@@ -524,32 +520,31 @@ set.seed(485)
 reg.cv <- 
   train(sale_price ~ ., data = st_drop_geometry(neighboreffect) %>% 
                              dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
-                                               hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor), 
-     method = "lm", trControl = fitControl, na.action = na.pass)
+                                               hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor), method = "lm", trControl = fitControl, na.action = na.pass)
 
 reg.cv
 ```
 
 
-
 ```{r}
-mean(reg.cv$resample[,3])
+reg.cv$resample %>% 
+  summarise(MAE = mean(reg.cv$resample[,3]),
+            sd(reg.cv$resample[,3])
+) %>%
+  kbl(col.name=c('Mean Absolute Error','Mean Absolute Percentage Error')) %>%
+  kable_styling()
 ```
 
 
 
 ```{r}
-sd(reg.cv$resample[,3])
+reg.cv$resample %>% 
+ggplot(aes(x=reg.cv$resample[,3])) +
+    geom_histogram( fill="#69b3a2", color="#e9ecef", alpha=0.9) 
 ```
 
 
 ```{r}
-hist(reg.cv$resample[,3], main = "Histogram", xlab = "Variable Name")
-```
-
-
-```{r}
-
 set.seed(311)
 challenge <- tr_neigh %>% 
   filter(toPredict == "CHALLENGE")
@@ -561,6 +556,52 @@ PricePrediction <-
   
 # write.csv(PricePrediction,"RegressToImpress.csv", row.names = FALSE)
 ```
+
+
+```{r}
+tr_neigh.test %>%
+  dplyr::select(SalePrice.Predict, sale_price) %>%
+  ggplot(aes(sale_price, SalePrice.Predict)) +
+  geom_point() +
+  stat_smooth(aes(sale_price, sale_price), 
+             method = "lm", se = FALSE, size = 1, colour="#FA7800") + 
+  stat_smooth(aes(SalePrice.Predict, sale_price), 
+              method = "lm", se = FALSE, size = 1, colour="#25CB10") +
+  labs(title="Predicted sale price as a function of observed price",
+       subtitle="Orange line represents a perfect prediction; Green line represents prediction")
+```
+
+```{r}
+
+coords.test_n <-  st_coordinates(tr_neigh.test) 
+neighborList.test_n <- knn2nb(knearneigh(coords.test_n, 5))
+spatialWeights.test_n <- nb2listw(neighborList.test_n, style="W")
+
+tr_neigh.test %>% 
+  mutate(lagPriceError = lag.listw(spatialWeights.test_n, SalePrice.Error)) %>%
+  ggplot()+
+  geom_point(aes(x =lagPriceError, y =SalePrice.Error))+
+  stat_smooth(aes(lagPriceError, SalePrice.Error), 
+             method = "lm", se = FALSE, size = 1, colour="blue")  
+```
+
+
+```{r}
+
+moranTest_n <- moran.mc(tr_neigh.test$SalePrice.Error, 
+                      spatialWeights.test_n, nsim = 999)
+
+ggplot(as.data.frame(moranTest_n$res[c(1:999)]), aes(moranTest_n$res[c(1:999)])) +
+  geom_histogram(binwidth = 0.01) +
+  geom_vline(aes(xintercept = moranTest_n$statistic), colour = "orange",size=1) +
+  scale_x_continuous(limits = c(-1, 1)) +
+  labs(title="Observed and permuted Moran's I",
+       subtitle= "Observed Moran's I in orange",
+       x="Moran's I",
+       y="Count") 
+```
+
+
 
 
 
@@ -596,13 +637,243 @@ ggcorrplot(
 
 
 ```{r}
-vars <- select_if(st_drop_geometry(varibles), negate(is.numeric)) %>% na.omit()
-vars %>% tbl_summary() %>% 	as_kable()
 
+vars <- select_if(st_drop_geometry(varibles), negate(is.numeric)) %>% na.omit()
+vars %>% tbl_summary() %>% as_kable() %>%  kable_styling()
+
+```
+
+
+
+```{r anova numeric varible}
+anova_var <- c("DIST_NAME", "view", "stories", "hasGarage", "hasFireplace", "buildingdis", "quality", "hasAC", "hasBasement")
+
+anova_summary_table <- data.frame(Df = integer(0), Sum_Sq = numeric(0), Mean_Sq = numeric(0), F_value = numeric(0))
+row_names <- character(0)
+
+for (i in seq_along(anova_var)) {
+  var <- anova_var[i]
+  anova_result <- aov(neighboreffect$sale_price ~ as.factor(neighboreffect[[var]]))
+  #paste("ANOVA result for", var)
+  summary_data <- summary(anova_result)[[1]][, c("Df", "Sum Sq", "Mean Sq", "F value")]
+  anova_summary_table <- rbind(anova_summary_table, summary_data)
+   row_names <- c(row_names, paste(var))
+}
+
+filter_condition <- !grepl("Residuals", rownames(anova_summary_table))
+filtered_anova_summary <- anova_summary_table[filter_condition, ]
+
+rownames(filtered_anova_summary) <- row_names
+kable(filtered_anova_summary) %>% kable_styling()
+```
+
+
+
+```{r correlation categorical varible}
+cor_var <- c("Age", "numRooms", "logarea", "crimes.Buffer", "totalstops", "hospitals_nn1", "shops_nn3", "school_buffer", "meanMinor")
+
+cor_summary_table <- data.frame(Variable = character(0), Correlation = numeric(0))
+
+for (var in cor_var) {
+  correlation_test <- cor.test(neighboreffect$sale_price, neighboreffect[[var]])
+  correlation <- correlation_test$estimate
+  p_value <- correlation_test$p.value
+  t_statistic <- correlation_test$statistic 
+  ci_lower <- correlation_test$conf.int[1] 
+  ci_upper <- correlation_test$conf.int[2] 
+  summary_data <- data.frame(Variable = var, Correlation = correlation, P_Value = p_value, T_Statistic = t_statistic, CI_Lower = ci_lower, CI_Upper = ci_upper)
+  cor_summary_table <- rbind(cor_summary_table, summary_data)
+}
+
+cor_summary_table$P_Value <- sprintf("%.3f", cor_summary_table$P_Value)
+
+cor_summary_table$P_Value <- ifelse(cor_summary_table$P_Value < 0.001, paste0("< 0.001", "***"), ifelse(cor_summary_table$P_Value < 0.01, paste0(cor_summary_table$P_Value, "**"), ifelse(cor_summary_table$P_Value < 0.05, paste0(cor_summary_table$P_Value, "*"), as.character(cor_summary_table$P_Value))))
+
+kable(cor_summary_table, row.names = FALSE) %>% kable_styling()
+
+```
+
+
+
+```{r}
+export_summs(reg1, reg2)
+```
+
+
+```{r}
+neighboreffect_nongeom_long <- neighboreffect_nongeom%>% 
+  pivot_longer(cols = -sale_price, # everything except measurement
+               names_to = "Type", # categorizes all quantitative variables into Type
+               values_to = "Number") # the name of values is Number
+
+
+scatterplot <- neighboreffect_nongeom_long %>%
+  ggplot(aes(x= Number, y = sale_price)) +
+  geom_point(size = 0.01) +  # smaller the size of each point
+      geom_smooth(method='lm', formula= y~x) +
+  facet_wrap(~ Type, scales = "free") 
+scatterplot
+```
+
+```{r fig.height=8, fig.width=11}
+variables_to_plot <- c("hasBasement", "hasAC", "hasFireplace", "hasGarage", "stories", "view",  "quality", "buildingdis")
+subset_varibales <- neighboreffect %>% select(all_of(variables_to_plot)) %>%  st_drop_geometry()
+
+long_vars <- gather(subset_varibales)
+
+plot1 <- ggplot(long_vars, aes(x = value)) +
+  geom_bar() +
+  facet_wrap(~ key, scales = "free", ncol = 4) +
+  #coord_flip() +
+  labs(title = "Distribution of Variables",
+       x = "Value",
+       y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+variables_to_plot <- c("DIST_NAME")
+subset_varibales <- neighboreffect %>% select(all_of(variables_to_plot)) %>%  st_drop_geometry()
+
+long_vars <- gather(subset_varibales)
+
+plot2 <- ggplot(long_vars, aes(x = value)) +
+  geom_bar() +
+  facet_wrap(~ key, scales = "free") +
+  #coord_flip() +
+  labs(title = "Distribution of Variables",
+       x = "Value",
+       y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+(plot1 | plot2) + plot_layout(widths = c(2, 1.5))
+
+```
+
+
+```{r}
+neighboreffect <- neighboreffect %>% 
+  mutate(sale_class = cut(sale_price, breaks = c(0, 250000, 500000, 750000, 1000000, max(neighboreffect$sale_price, na.rm=TRUE))))
+  
+ggplot()+
+    geom_sf(data=dst, fill='grey80',color='transparent')+
+    geom_sf(data=neighboreffect, size=0.75,aes(colour = q5(sale_class)))+
+    geom_sf(data=dst,fill='transparent',color='black')+
+    scale_color_manual(values = palette5,
+                    name = "Sales Price (USD)",
+                    na.value = 'grey80',
+                    labels = c('$0-$250k', '$250k-$500k', '$500k-$750k', '$750k-$1m', '$1m+'))
+```
+
+```{r}
+ggplot()+
+  geom_sf(data=dst,fill='grey80',color='transparent')+
+  geom_sf(data=neighboreffect,aes(colour = (crimes.Buffer)),size=0.24)+
+ scale_color_continuous(low = "#FAF9F6", high = "red", name= "Crime Buffer") + 
+  geom_sf(data=dst,fill='transparent',color='black')
+```
+
+```{r}
+
+ggplot()+
+  geom_sf(data=dst,fill='grey80',color='transparent')+
+  geom_sf(data=neighboreffect,aes(colour = meanMinor),size=0.5)+
+  scale_color_viridis(name = "Minority")+
+  geom_sf(data=dst,fill='transparent',color='black')
+```
+
+```{r}
+ggplot()+
+  geom_sf(data=dst,fill='grey80',color='transparent')+
+  geom_sf(data=neighboreffect,aes(colour = buildingdis),size=0.5)+
+  scale_color_brewer(palette = "Set1", name = "Building Type")+
+  geom_sf(data=dst,fill='transparent',color='black')
+```
+
+
+
+```{r}
+ggplot()+
+  geom_sf(data=dst,fill='grey80',color='transparent')+
+  geom_sf(data=tr_neigh.test,aes(colour = SalePrice.Error),size=0.5)+
+  scale_color_continuous(type = "viridis")
+
+```
+
+
+```{r}
+
+PredictAllVal <- tr_neigh %>% 
+  mutate(prediction = predict(reg.train, tr_neigh)) %>% 
+  mutate(prediction_class = cut(prediction, breaks = c(0, 250000, 500000, 750000, 1000000, max(PredictAllVal$prediction, na.rm=TRUE))))
+
+ggplot()+
+    geom_sf(data=dst, fill='grey80',color='transparent')+
+    geom_sf(data=PredictAllVal, size=0.75,aes(colour = q5(prediction_class)))+
+    geom_sf(data=dst,fill='transparent',color='black')+
+    scale_color_manual(values = palette5,
+                    name = "Sales Price (USD)",
+                    na.value = 'grey80',
+                    labels = c('$0-$250k', '$250k-$500k', '$500k-$750k', '$750k-$1m', '$1m+'))
+
+```
+
+
+```{r}
+ggplot() + geom_sf(data = na.omit(tracts20), aes(fill = majority)) +
+    scale_fill_manual(values = c("#25CB10", "#FA7800"), name="Race Context") +
+    labs(title = "Race Context") +
+    mapTheme() + theme(legend.position="bottom")
+```
+
+
+
+```{r}
+st_join(tr_neigh.test, tracts20) %>% 
+  filter(!is.na(majority)) %>%
+  group_by(majority) %>%
+  summarize(mean.MAPE = scales::percent(mean(SalePrice.APE, na.rm = T))) %>%
+  st_drop_geometry() %>%
+  spread(majority, mean.MAPE) %>%
+  kable(caption = "Test set MAPE by neighborhood income context") %>% 
+  kable_styling()
+```
+
+
+```{r}
+Phily<- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/neighborhood.geojson") %>% st_transform('ESRI:102728')
+
+to_plot <- st_intersection(tr_neigh.test, Phily %>% dplyr::select("NAME")) %>% 
+  st_drop_geometry() %>% 
+  group_by(NAME) %>%
+  summarise(mean.MAPE = mean(SalePrice.APE, na.rm = T)) %>% 
+  left_join(Phily) %>% 
+  st_sf()
+
+
+  
+to_plot %>%
+  filter(NAME != "KENSINGTON") %>% 
+  ggplot() + 
+      geom_sf(aes(fill = mean.MAPE)) +
+      scale_fill_viridis()
 
 
 ```
 
+
+```{r}
+tr_neigh.testPhilly <- st_join(tr_neigh.test, Phily %>% select(NAME)) %>% 
+  group_by(NAME) %>%
+  summarise(mean.MAPE = mean(SalePrice.APE, na.rm = T)) %>% 
+  mutate(st_join(tr_neigh.test, Phily %>% select(NAME)) %>% group_by(NAME) %>%
+  summarise(mean.Price = mean(sale_price, na.rm = T)))
+
+tr_neigh.testPhilly %>% filter(NAME != "KENSINGTON") %>%
+    ggplot(aes(mean.MAPE,mean.Price)) +
+  geom_point() +
+  plotTheme()
+
+
+```
 
 
 ```{r, warning=FALSE}
@@ -640,5 +911,11 @@ results
 
 
 
+`
 
+```{r}
+test <- st_join(PredictAllVal, Phily) %>% 
+  filter(is.na(prediction))
+
+```
 

@@ -1,0 +1,1411 @@
+---
+title: "Philadelphia Home Price Prediction with Geospatial Machine Learning"
+author: "Emily Zhou, Echin Li"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: simplex
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    code_download: yes
+editor_options:
+  markdown:
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Version 1.0 \| First Created Oct 3, 2023 \| Updated Oct 11, 2023
+
+Keywords: Ordinary Least Square Regression, Spatial Auto-correlation, Moran's I, Monte Carlo Simulation, Getis-Ord Gi*, K-fold Cross Validation, K Nearest Neighbors
+
+
+# Introduction 
+
+Machine learning is a powerful tool in the field of city planning for its ability to efficiently process vast amounts of data, discern intricate patterns, and generate predictions on the unknown, which consequently guides municipal decision-making. Among all kinds of machine learning techniques, the Ordinary Least Squares (OLS) regression has emerged as a powerful tool for predicting house prices. 
+
+Property values are influenced by a variety of social, environmental, economic, and cultural factors that is hard to capture using pure data analysis and visualization. At the same time, it remains a fundamental aspect of city planning and development: predicting sale prices is essential for fostering a transparent, stable, and efficient real estate market. For the city government, accurate property value prediction enables them to plan infrastructure development, allocate resources efficiently, and formulate housing policies that cater to the needs of diverse populations. For individual householders, it helps with making informed decisions regarding property investments and home-ownership, ensuring financial stability and fostering sustainable communities.
+
+The city of Philadelphia is known for complexities in real estate investment. Its housing market reveal stark disparities rooted in geography, race, and income. Neighborhoods in the city exhibit vast differences in home prices that in part foreshadows neighborhood social-demographic characteristics, access to amenities, housing types, and historical patterns of investment and disinvestment. In particular, Center City (plus its surrounding neighborhoods) and Northwest Philadelphia command high property values due to their proximity to amenities and picturesque neighborhood, whereas areas in Northeast and West Philadelphia grapple with lower home prices due to systematic income equities, racial tensions, and limited access to opportunities. 
+
+In this report, we attempted to predict property values in Philadelphia with OLS regression. We acknowledge the difficulties of making such prediction using a linear regression model, because the city's diverse and multifaceted housing market shaped by historical injustices and social disparities would defy the simplistic linear assumptions of OLS regression. **That said, our goal is to fit a linear regression model that captures the internal characteristics, surrounding public services, and spatial characteristics of properties in Philadelphia as much as possible.** The main data set used in this report was obtained from [PHILA.GOV](https://www.phila.gov/) that contains a variety of property characteristics, including sale price. In addition, we have made use of resources from [OpenDataPhilly](https://opendataphilly.org/), [US Census Bureau](https://data.census.gov/), and [Open Data PHL Maps](https://data-phl.opendata.arcgis.com/) to gain more insights into the distribution of social amenities, location of crimes incidents, and neighborhood characteristics within the city. 
+
+This report is therefore structured as follows. **Firstly**, we discuss our rational of our selection of dependent variables as well as our approach to data manipulation and feature engineering using our main housing data set. **Secondly**, we present our findings from performing both a global and a local G test for spatial autocorrelation. This is followed by another discussion on the importance of accounting for spatial features when predicting property values and a comparison of regression models with and without spatial features. **Thirdly**, we present a holistic summary of all of our selected and processed dependent variables that we will use for our final model. **Finally**, we make predictions of sale price using our model. This is supplemented with a variety of tests of checking model's generalizability and goodness of fit as well as a reflection on the model's effectiveness and bias. 
+
+Overall, our model is able to capture the majority of variations in property values throughout Philadelphia. However, we are critical of this model's effectiveness in real world setting as it seems to significantly under-predict property values in Philadelphia, especially for lower-income racial minority neighborhoods. Given Philadelphia's diverse and multifaceted housing market, we suspect that this model had failed to account for some of the intra-neighborhood nuances cannot be properly generalized and represented using a linear model. To fully account for variations in home price, we must get a better understanding of the social and historical landscape of Philadelphia to select predictor variables that contextualize with the housing characteristics of the city and avoid accidentally devaluing certain neighborhoods. 
+
+The GitHub repository for this report is [here](https://github.com/emilyzhou112/MUSA5080-Philly-ML/tree/main). 
+
+```{r libraries, include=FALSE, warning=FALSE}
+# global options 
+options(scipen=999)
+options(tigris_class = "sf")
+options(digits = 3)
+options(repos = list(CRAN="http://cran.rstudio.com/"))
+
+# list of required packages
+packages <- c( "tidyverse", "ggplot2", "svDialogs", "tidycensus", "sf", "knitr", "rmarkdown", "kableExtra", "stringr", "spdep", "sfdep", "caret", "car", "ckanr", "FNN", "grid", "gridExtra", "ggcorrplot", "corrr", "jtools", "ggstance", "ggpubr", "broom.mixed", "stargazer", "gtsummary", "patchwork")
+
+# install and load required packages
+package.check <- lapply(
+  packages,
+  FUN = function(x) {
+    if (!require(x, character.only = TRUE)) {
+      install.packages(x, dependencies = TRUE, quietly=TRUE)
+      library(x, character.only = TRUE)
+    }
+  }
+)
+
+
+
+# load in multiple ring buffer function
+source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
+
+```
+
+
+```{r data, include=FALSE}
+
+training <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/studentData.geojson") %>% st_transform('ESRI:102728')
+
+crime <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/crime.geojson") %>% st_transform('ESRI:102728')
+
+hospital <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/Hospitals.geojson") %>% st_transform('ESRI:102728')
+
+el <- st_read("https://opendata.arcgis.com/datasets/8c6e2575c8ad46eb887e6bb35825e1a6_0.geojson")
+Broad_St <- st_read("https://opendata.arcgis.com/datasets/2e9037fd5bef406488ffe5bb67d21312_0.geojson")
+
+schools <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/school.geojson") %>% st_transform('ESRI:102728')
+
+shopping <- st_read("https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/Commercial_Corridors/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson") %>% st_transform('ESRI:102728') 
+
+dst<- st_read("https://opendata.arcgis.com/datasets/0960ea0f38f44146bb562f2b212075aa_0.geojson")%>%
+  st_transform('ESRI:102728') 
+
+Philly<- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/neighborhood.geojson") %>% st_transform('ESRI:102728')
+
+block <- st_read("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-Philly-ML/main/data/Census_Blocks_2010.geojson") %>% st_transform('ESRI:102728')
+```
+
+
+# Data Processing 
+
+Based on our prior knowledge in house price and the given data set, we believe that the sale price of houses may be related to both the internal and geographical attributes of the houses. Internal attributes refer to factors such as the age of the house, the number of bedrooms and bathrooms, the presence of amenities, and the overall condition of the house. (We will elaborate on geographical attributes later in the report). 
+
+Regarding internal attributes, we selected the following variables from: the year the house was built, the number of bedrooms, the number of bathrooms, the number of air conditioning units, basement condition, the number of fireplaces, garage condition, the number of stories, total area, livable area, heating condition, view category, quality grade and the type of building description. Other indicators related to house sale prices, such as topography, internal condition, and external condition, were not included in the scope of indicators due to their correlation with the selected indicators.
+
+We calculated the age of the houses by subtracting 2023 from the year they were built and used it as a new time measurement indicator. Since the number of bedrooms and bathrooms are correlated, we used the total number of rooms as a new indicator. Specific quantities or detailed conditions of air conditioning, basement, fireplace, garage, and heating did not have a significant impact individually, but their presence or absence had a significant impact on house prices. Therefore, we created new binary variables for each of them. Regarding the number of stories, we collapsed their categories into single, double, and multiple. For total area, we chose the larger of the total area and livable area as the measurement indicator and applied a logarithmic transformation to achieve a normal distribution. For the view type near the house, we summarized the categories into three classes: Scenic (including Cityscape/Skyline, Flowing Water, Park/Green Area), Typical, and Others (Urban). For quality and building type, we performed similar processing, combining indicators above "average" into a "good" category and those "average" or below into a "bad" category.
+ 
+
+```{r baseline data process}
+tr_processed <- training %>% 
+  mutate(Age = 2023 - year_built) %>% 
+  mutate(numRooms = case_when(
+         is.na(number_of_bedrooms) & !is.na(number_of_bedrooms) ~ number_of_bathrooms,
+         is.na(number_of_bathrooms) & !is.na(number_of_bedrooms) ~ number_of_bedrooms,
+         is.na(number_of_bathrooms) & is.na(number_of_bedrooms) ~ 0,
+         TRUE~ number_of_bedrooms + number_of_bathrooms) )%>% 
+  mutate(hasAC = case_when(
+         central_air %in% c("1", "Y") ~ "Y",
+         TRUE~ "N"),
+         hasBasement = case_when(
+         basements %in% c("1", "4", "A", "B", "C", "D", "E", "F") ~ "Y",
+         TRUE~ "N"),
+         hasFireplace = case_when(
+         fireplaces == 0 | is.na(fireplaces)  ~ "N",
+         TRUE~ "Y"),
+         hasGarage = case_when(
+         garage_type == 0 | is.na(garage_type)  ~ "N",
+         TRUE~ "Y"),
+         stories = case_when(
+         number_stories == 1  ~ "single",
+         number_stories == 2  ~ "double",
+         TRUE~ "multiple"),
+         area = case_when(
+           total_livable_area > total_area ~ total_livable_area,  
+           TRUE ~ total_area),
+         hasHeater = case_when(
+         type_heater == 0 | is.na(type_heater)  ~ "N",
+         TRUE~ "Y"),
+         view = case_when(
+         view_type == "I" | view_type == "0" | is.na(view_type)   ~ "Typical",
+         view_type == "A" | view_type == "B" | view_type == "C" ~ "Scenic",
+         TRUE~ "Urban"), 
+         quality = case_when(
+         quality_grade %in% c("4", "5", "6", "A", "A+", "A-", "B", "B+","B-","S","S+","X-")  ~ "Good",
+         TRUE~ "Bad"),
+         buildingdis = case_when(
+         grepl("ROW",building_code_description_new, ignore.case = FALSE) ~ "Row",
+         grepl("TWIN",building_code_description_new, ignore.case = FALSE) ~ "TWIN",
+         TRUE~ "Other")) %>% 
+  mutate(logarea = log(area))
+
+```
+
+In addition to these transformations, we excluded unreasonable outliers in the training data set. We selected houses where age is less than 500 years, room count is less than 30, and both total house area and livable house area are non-zero or missing. We also excluded houses with area larger than 50,000 square feet because these are not typical single family houses. We then limited the housing prices in the training data set to be below $2,000,000 to reduce the influence of extreme values on the model.
+
+```{r filter extreme values}
+
+baseline <- tr_processed %>% 
+  filter(toPredict != "CHALLENGE") %>%
+  filter(Age < 500) %>% 
+  filter(sale_price < 2000000) %>% 
+  filter(numRooms < 30) %>% 
+  filter(total_livable_area != 0 & is.na(total_area) == FALSE) %>% 
+  filter(area < 50000) 
+
+```
+
+
+# Fitting Regression Model
+
+## Baseline Regression
+
+We conducted an initial regression and obtained the following results. All indicators show statistically significant correlations with house sale prices with p < 0.001. The adjusted R-squared value is 0.443, indicating that the model can explain 44.3% of variations in sale price. The standard errors for predicting the presence of a fireplace, garage, and landscape type are greater than 5000, which may affect the precision of the model, but this is the optimal result we achieved so far. The Generalized Inverse Variance Inflation Factor (GIVF) for each indicator is less than 3, indicating that there are no issues of multicollinearity in the model.
+
+```{r baseline regression, fig.height=8, fig.width=11}
+
+reg1 <- lm(sale_price ~ ., data = baseline %>% st_drop_geometry() %>% 
+                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
+                                               hasFireplace, hasGarage, stories, logarea, view))
+summary_reg1 <- summary(reg1)
+coefficients_table <- summary_reg1$coefficients
+
+new_variable_names <- c(
+  "Age",
+  "Number of Rooms",
+  "Basement",
+  "Air Conditioner",
+  "Quality Grade",
+  "Building Type",
+  "Fireplace",
+  "Garage",
+  "Number Stories",
+  "Type of View",
+  "Area"
+)
+
+coefficients_df <- data.frame(
+  Variable = new_variable_names,
+  Estimate = coefficients_table[1:11, "Estimate"],
+  Std.Error = coefficients_table[1:11, "Std. Error"],
+  t_value = coefficients_table[1:11, "t value"],
+  Pr = coefficients_table[1:11, "Pr(>|t|)"]
+)
+
+coefficients_df %>%
+  kable(row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  footnote(general_title = "\n", general = "Table 1")
+
+model_summary <- data.frame(
+  Statistic = c("Multiple R-squared", "Adjusted R-squared", "F-statistic"),
+  Value = c(
+    summary_reg1$r.squared,
+    summary_reg1$adj.r.squared,
+    summary_reg1$fstatistic[1]
+  )
+)
+
+model_summary %>%
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))%>%
+  footnote(general_title = "\n", general = "Table 2")
+
+vif_reg1 <- vif(reg1)
+vif_df <- as.data.frame(vif_reg1)
+vif_df$Variable <- new_variable_names
+vif_df <- vif_df[, c("Variable", names(vif_df)[!names(vif_df) %in% "Variable"])]
+
+vif_df %>%
+  kable(row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  footnote(general_title = "\n", general = "Table 3")
+```
+
+According to the residual plot, the scatter points exhibit divergent and irregular patterns around y=0. Most points are concentrated in the upper part, suggesting that the original model does not have a linear relationship. The distribution trend of scatter points slants upwards, indicating an underestimation tendency to some extent.
+
+```{r residual plot baseline}
+
+residuals_df <- data.frame(Residuals = resid(reg1), Fitted = fitted(reg1))
+ggplot(residuals_df, aes(x = Fitted, y = Residuals)) +
+  geom_point(size = 0.4, color = "#283d3b") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "#c44536") +
+  labs(title = "Residual Plot for Baseline Regression",
+       subtitle = "Each dot represent one property ",
+       caption = "Data: Philadelphia Properties and Current Assessments", 
+       x = "Fitted Values",
+       y = "Residuals") +
+  theme_light() +   
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=6),
+        axis.text.y=element_text(size=6), 
+        axis.title=element_text(size=8))
+
+
+```
+
+Using the baseline model, we predicted the sale price through splitting the data into training and testing set, and calculated the Mean Absolute Error (MAE) and Mean Absolute Percentage Error (MAPE) for our testing set. The current MAE and MAPE are 98329 and 39%, respectively.
+
+```{r prediction using baseline, warning=FALSE, message=FALSE}
+
+set.seed(485) 
+inTrain_base <- createDataPartition(
+   y = paste(baseline$hasBasement, baseline$hasAC, baseline$quality, baseline$buildingdis, baseline$hasFireplace, baseline$hasGarage, baseline$stories, baseline$view),
+              p = .60, list = FALSE)
+
+tr_processed.training <- baseline[inTrain_base,] 
+tr_processed.test <- baseline[-inTrain_base,]  
+
+
+reg.train_base <- lm(sale_price ~ ., data = tr_processed.training %>% st_drop_geometry() %>% 
+                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
+                                               hasFireplace, hasGarage, stories, logarea, view))
+tr_processed.test <- 
+  tr_processed.test %>% 
+  mutate(Regression = "Base", 
+         SalePrice.Predict = predict(reg.train_base, tr_processed.test),
+         SalePrice.Error = SalePrice.Predict - sale_price,
+         SalePrice.AbsError = abs(SalePrice.Predict - sale_price),
+         SalePrice.APE = (abs(SalePrice.Predict - sale_price)) / SalePrice.Predict)
+
+tr_processed.test %>% 
+  st_drop_geometry() %>%
+  summarise(MAE = mean(SalePrice.AbsError),
+            MAPE = mean(SalePrice.APE)*100) %>%
+  kbl(col.name=c('Mean Absolute Error','Mean Absolute Percentage Error')) %>%
+  kable_styling( bootstrap_options = c("striped", "hover", "condensed")) %>%
+  footnote(general_title = "\n", general = "Table 4")
+
+```
+
+
+## Spatial Autocorrelation Check 
+
+Using baseline regression to predict sale price only tells part of the story because property values are also closed related to their location in the city. Properties in close proximity often share similar attributes due to neighborhood amenities, socioeconomic factors, and infrastructural development. Therefore, we need to check the degree to which sale price of properties close to each other are correlated. We create a spatial weight matrix that relate each sale price to five of its nearest sale prices. We computed Moran's I under the null hypothesis that sale price is randomly distributed. The figure below plot the frequency of 999 randomly permutated I under Monte Carlo simulation, which shows that our observed I is much higher than all of the randomly generated I's. This validates the existence of spatial autocorrelation. 
+
+
+```{r Global Moran I, warning=FALSE}
+
+coords.test <-  st_coordinates(tr_processed.test) 
+neighborList.test <- knn2nb(knearneigh(coords.test, 5))
+spatialWeights.test <- nb2listw(neighborList.test, style="W")
+
+moranTest <- moran.mc(tr_processed.test$SalePrice.Error, 
+                      spatialWeights.test, nsim = 999)
+
+ggplot(as.data.frame(moranTest$res[c(1:999)]), aes(moranTest$res[c(1:999)])) +
+  geom_histogram(binwidth = 0.01, fill = "#283d3b") +
+  geom_vline(aes(xintercept = moranTest$statistic), colour = "#c44536" ,size=1) +
+  scale_x_continuous(limits = c(-0.5, 0.5)) +
+  labs(title = "Observed and Permuted Moran's I",
+       subtitle = "Observed Moran's I in Red",
+       x = "Moran's I",
+       y = "Count") +
+  theme_light() +   
+theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=6),
+        axis.text.y=element_text(size=6), 
+        axis.title=element_text(size=8))
+
+```
+
+Spatial autocorrelation can be evaluated at a global or local level. While global spatial autocorrelation provides an overall assessment of the spatial pattern across the entire study area, a local indicator of spatial association (LISA) identifies hotspots and coldspots of high or low values for each feature, offering a more detailed analysis of spatial patterns. Relying solely on global tests might overlook localized patterns within the data. In our case, we are interested in how high or low sale price clustered in Philadelphia. To do that, we can calculate the Gi statistic using `local_g_perm()` function in the `sfdep` package. The Gi is the ratio of the spatial lag of a feature to the sum of the feature’s values for its neighbors. A positive Gi value indicates that a feature and its neighbors have high values, while a negative Gi value indicates that they have low values. The magnitude of the Gi value indicates the strength of the clustering. Note: we used the block groups in Philadelphia as the spatial unit, to which we joined the sale price data in and summarized the mean sale price for each block group. 
+
+```{r preparing local G statistics, message=FALSE, warning=FALSE, results='hide'}
+
+tr_block <- st_join(tr_processed, block %>% select(GEOID10))
+
+gi_data <- tr_block %>% 
+  st_drop_geometry() %>% 
+  select(GEOID10, sale_price) %>% 
+  group_by(GEOID10) %>% 
+  summarize(mean_sp = mean(sale_price)) %>% 
+  na.omit() %>% 
+  left_join(block) %>% 
+  st_sf() %>% 
+  st_make_valid()
+```
+
+We may see from the plot below that there are some small significant clusters of sale price in Philadelphia. In particular, we see hotspot, meaning continuous numbers of high sale price clustered in Northwest Philadelphia and some clusters of cold spot, meaning continuous numbers of low sale price in North Philadelphia. This again point out the importance to account for spatial features when predicting sale prices. 
+
+```{r Getid Ord local G statistics, fig.height=6, fig.width=8, message=FALSE, warning=FALSE}
+
+# Check for empty neighbor sets
+# card() calculates number of neighbors for each polygon in the list
+# which() finds polygons with 0 neighbors
+# Remove polygons with empty neighbor sets from the data
+list_nb <- poly2nb(gi_data, queen = TRUE)
+empty_nb <- which(card(list_nb) == 0)
+gi_subset <- gi_data[-empty_nb, ]
+
+neigh_nbs <- gi_subset %>% 
+  mutate(
+    nb = st_contiguity(geometry),  # neighbors share border    
+    wt = st_weights(nb), # row-standardized weights              
+    neigh_lag = st_lag(mean_sp, nb, wt)  # calculate spatial lag of mean sale price
+  )
+
+gi_hot_spots <- neigh_nbs %>% 
+  mutate(Gi = local_g_perm(mean_sp, nb, wt, nsim = 999)) %>% 
+  unnest(Gi) 
+
+gi_hot_spots %>% 
+  ggplot() + 
+  geom_sf(data = dst, color="grey",  fill = "grey") +
+  geom_sf(data = gi_hot_spots, aes(fill = gi), color = NA)+
+  scale_fill_gradient2(low = "#283d3b", high = "#c44536", name = "Gi") +
+  theme(
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.4)
+        ) +
+  labs(title = "Getid-Ord Spatial Hotspot for Sale Price",
+       subtitle = "Red cluster indicate hotspots",
+       caption = "Note: Errors with block group dataset is \n leading to missing values for particular blocks") 
+```
+
+## Neighborhood Effect Regression
+
+Given that sale prices may be related to the geographical attributes of the houses, we added neighborhood information (in this case the planning district) to the existing baseline model and added other relevant attributes. 
+
+```{r bring in neighborhood, warning=FALSE}
+
+tr_neigh <- st_intersection(tr_processed, dst %>% dplyr::select("DIST_NAME"))
+
+```
+
+**Crime rate** is related to the safety of houses and residents. Areas with lower crime rates tend to have higher house sale prices. Therefore, we introduced the number of crimes around the house as an indicator of safety. We used Aggravated Assault as the main measure of crime and counted the occurrences within a 200-meter radius of the house's location. 
+
+Similarly, we considered **schools** as an important factor for families with minor children when choosing a house. Private schools tend to have higher tuition fees, which may attract affluent household and thereby raising local house prices. As such, we selected schools and counted the number of private K-12 schools within a 1.5-kilometer radius of the house's location. 
+
+Likewise, convenience for **shopping** or **commuting** can also affect house prices, reflecting both the transit-oriented development (TOD) area and the extent of bustling areas. Therefore, we also counted and included the number of commercial activities or subway stations within the vicinity of the house. The presence of **hospitals** has a more complex impact on house prices for easy access to medical service is critical for the health and safety of the neighborhood. We calculated the distance from the house to the nearest hospital to account for the relationship between the distance and house prices. Finally, considering the effect of racial segregation on sale price, we categorized houses based on whether or not they are located in a census tract with over 50% of **minority populations**. 
+
+```{r bring in crime school hospital shops stops and race, warning=FALSE, message=FALSE, cache=TRUE,  results="hide"}
+
+# Crime
+assault <- crime %>% 
+  filter(text_gener == "Aggravated Assault Firearm" | text_gener == "Aggravated Assault No Firearm") %>% 
+  dplyr::select(point_x, point_y) %>%
+  na.omit() %>% 
+  st_as_sf(coords = c("Long", "Lat"), crs = "EPSG:102728") %>%
+  distinct()
+tr_neigh$crimes.Buffer <- tr_neigh %>% 
+    st_buffer(660) %>% 
+    aggregate(mutate(assault, counter = 1),., sum) %>%
+    pull(counter) 
+tr_neigh$crimes.Buffer[is.na(tr_neigh$crimes.Buffer)] <- 0
+  
+# School
+schools <- schools %>% 
+  filter(GRADE_ORG == "K-12" | GRADE_ORG == "9-12") %>%  
+  filter(TYPE_SPECIFIC == "PRIVATE") 
+school_buffer <-
+  schools %>%
+  dplyr::select(geometry) %>%
+  st_transform('ESRI:102728') %>%
+    na.omit() 
+tr_neigh$school_buffer <- 
+    tr_neigh$geometry %>% 
+    st_buffer(5280) %>% 
+    aggregate(mutate(school_buffer, counter = 1),., sum) %>%
+    pull(counter)
+tr_neigh$school_buffer[is.na(tr_neigh$school_buffer)] <- 0
+
+
+# Hospital
+tr_neigh <-
+  tr_neigh %>% 
+    mutate(hospitals_nn1 = nn_function(st_coordinates(tr_neigh), 
+                              st_coordinates(hospital), k = 1))
+
+# Shops
+shops <- st_centroid(shopping) %>% dplyr::select("OBJECTID", "geometry")
+tr_neigh <-
+  tr_neigh %>% 
+    mutate(shops_nn3 = nn_function(st_coordinates(tr_neigh), 
+                              st_coordinates(shops), k = 3))
+
+# Transit Stops
+septaStops <- 
+  rbind(
+     el %>% 
+      mutate(Line = "El") %>%
+      dplyr::select(Station, Line),
+     Broad_St %>%
+      mutate(Line ="Broad_St") %>%
+      dplyr::select(Station, Line)) %>%
+  st_transform('ESRI:102728')
+joinstops <- tr_neigh %>% 
+  st_intersection(st_buffer(septaStops, 3000)) %>% 
+  st_drop_geometry() %>% 
+  group_by(parcel_number) %>% 
+  summarize(
+    totalstops = n())
+tr_neigh <- tr_neigh %>% 
+  left_join(joinstops, by = "parcel_number") 
+tr_neigh <- tr_neigh %>% 
+  mutate(totalstops = ifelse(is.na(totalstops), 0, totalstops))
+
+
+# Race
+census_api_key(dlgInput(
+  "Enter a Census API Key", # ask for an api key
+  Sys.getenv("CENSUS_API_KEY")
+)$res,
+overwrite = TRUE)
+tracts20 <- 
+  get_acs(geography = "tract", 
+          variables = c("B02001_001E", # total population
+            "B02001_002E", # white population
+            "B02001_003E", # black population
+            "B02001_005E", # asian population
+            "B03002_012E"), 
+          year=2020, state=42, county=101, 
+          geometry=TRUE, output="wide") %>%
+  st_transform('ESRI:102728') %>% 
+  rename(TotalPop = B02001_001E, 
+         Whites = B02001_002E,
+         African_Americans = B02001_003E,
+         Asians = B02001_005E,
+         Latinx = B03002_012E) %>% 
+  mutate(pctMinority = ifelse(TotalPop > 0, (African_Americans + Asians + Latinx ) / TotalPop, 0), 
+         majority = ifelse(pctMinority > 0.5, "minority", "majority"))
+joinrace <- tr_neigh %>% 
+  st_intersection(tracts20 %>% select(pctMinority)) %>% 
+  st_drop_geometry() %>% 
+  group_by(parcel_number) %>% 
+  summarize(
+    meanMinor = mean(pctMinority))
+tr_neigh <- tr_neigh %>% 
+  left_join(joinrace, by = "parcel_number") 
+  
+```
+
+
+```{r filter out, include=FALSE}
+
+neighboreffect <- tr_neigh %>% 
+  filter(toPredict != "CHALLENGE") %>%
+  filter(Age < 500 & Age > -1) %>% 
+  filter(sale_price < 2000000) %>% 
+  filter(numRooms < 30) %>% 
+  filter(total_livable_area != 0 & is.na(total_area) == FALSE) %>% 
+  filter(area < 50000) 
+
+```
+
+
+We built a new regression of the model with these indicators and obtained the following results. All indicators show statistically significant correlations with house sale prices at the 95% level, except for the presence of a basement and landscape type near the house. Adjusted R-squared is 0.659, indicating that the model can explain 66.7% of variations in sale price. The standard errors for predicting the presence of a garage, neighborhood area, landscape type, and minority-majority community are greater than 5000, which may affect the precision of the model, but it is still the optimal result obtained so far. The Generalized Inverse Variance Inflation Factor (GIVF) for each indicator is less than 3, indicating that there are no issues of multicollinearity in the model. 
+
+```{r neighborhood effect regression}
+
+reg2 <- lm(sale_price ~ ., data = neighboreffect %>% st_drop_geometry() %>% 
+                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
+                                               hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor))
+summary_reg2 <- summary(reg2)
+coefficients_table <- summary_reg2$coefficients
+
+new_variable_names <- c(
+  "Age",
+  "Number of Rooms",
+  "Basement",
+  "Air Conditioner",
+  "Quality Grade",
+  "Building Type",
+  "Fireplace",
+  "Garage",
+  "Number Stories",
+  "Area",
+  "Type of View",
+  "District Name",
+  "Crimes",
+  "Transit Stops",
+  "Hospitals",
+  "Shops",
+  "Schools",
+  "Minor Race"
+)
+
+coefficients_df <- data.frame(
+  Variable = new_variable_names,
+  Estimate = coefficients_table[1:18, "Estimate"],
+  Std.Error = coefficients_table[1:18, "Std. Error"],
+  t_value = coefficients_table[1:18, "t value"],
+  Pr = coefficients_table[1:18, "Pr(>|t|)"]
+)
+
+coefficients_df %>%
+  kable(row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  footnote(general_title = "\n", general = "Table 5")
+
+model_summary <- data.frame(
+  Statistic = c("Multiple R-squared", "Adjusted R-squared", "F-statistic"),
+  Value = c(
+    summary_reg1$r.squared,
+    summary_reg1$adj.r.squared,
+    summary_reg1$fstatistic[1]
+  )
+)
+
+model_summary %>%
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))%>%
+  footnote(general_title = "\n", general = "Table 6")
+
+vif_reg2 <- vif(reg2)
+vif_df <- as.data.frame(vif_reg2)
+vif_df$Variable <- new_variable_names
+vif_df <- vif_df[, c("Variable", names(vif_df)[!names(vif_df) %in% "Variable"])]
+
+vif_df %>%
+  kable(row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  footnote(general_title = "\n", general = "Table 7")
+```
+
+
+The residual plot based on neighborhood effect regression model is much improved from the previous model, with dots distributed much more evenly along the best fit line, despite that there are still showing some trends of underprediction. 
+
+```{r residual plot neighborhood}
+
+residuals_neigh <- data.frame(Residuals = resid(reg2), Fitted = fitted(reg2))
+ggplot(residuals_neigh, aes(x = Fitted, y = Residuals)) +
+  geom_point(size = 0.4, color = "#283d3b") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "#c44536") +
+  labs(title = "Residual Plot for Neighborhood Effect Regression",
+       subtitle = "Each dot represent one property ",
+       caption = "Data: Philadelphia Properties and Current Assessments \n Open Data PHl Maps", 
+       x = "Fitted Values",
+       y = "Residuals") +
+  theme_light() +   
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=6),
+        axis.text.y=element_text(size=6), 
+        axis.title=element_text(size=8))
+
+
+```
+
+
+## Regression Comparison 
+
+Comparing across two regression models, we see that while baseline regression only account 44% of the variance in sale price, this figure rise to 66% in neighborhood effect regression, suggesting a significant improvement. 
+
+```{r compare baseline and neighborhood, include=FALSE}
+export_summs(reg1, reg2)
+```
+|                   |               Model 1    |      Model 2      |
+|:----------------- | :----------------------  | :---------------- |
+|    Age            |                   -168.48 *** |      -493.20 ***  |
+|   Number of Rooms        |                  4253.03 *** |     11596.05 ***  |
+|   Basement-Yes    |                 11261.69 ***  |    3906.81 *    |
+            |   AC-Yes          |                133857.02 ***  |   56042.75 ***  |
+            |   Quality Grade-Good     |              127945.33 *** |    52554.08 ***  |
+            |   Type of Building-Row  |                -9345.07 *   |    55783.06 *** |
+            |   Type of Building-TWIN |               -51328.87 *** |    15173.55 ***  |
+            |   Fireplace-Yes   |               135352.95 *** |    78991.68 ***  |
+            |   Garage-Yes     |               -35222.93 ***  |  -32904.45 ***  |
+            |   Number Stories-Multiple |               167907.96 *** |    71068.23 ***  |
+            |   Number Stories-Single   |               11213.33 *** |   -14668.54 ***  |
+            |   Area         |                97509.20 ***  |  151561.74 ***           |
+            |   Type of View-Typical     |               -31620.21 ***  |  -23809.29 ***  |
+            |   Type of View-Urban       |               -47330.70 ***  |  -21019.12 **   |
+            |   District-Central Northeast  |                |    -258339.67 ***   |
+            |   District-Lower Far Northeast|                |    -299487.41 ***    |
+            |   District-Lower North         |               |    -191975.01 ***  |
+            |   District-Lower Northeast    |                |    -230793.28 ***  |
+            |   District-Lower Northwest    |                |    -270498.71 ***   |
+            |   District-Lower South       |                 |    -150961.77 ***  |
+            |   District-Lower Southwest   |                 |    -182200.34 ***   |
+            |   District-North            |                  |  -227148.51 ***    |
+            |   District-North Delaware   |                  |    -257030.56 ***  |
+            |   District-River Wards      |                  |    -227939.29 ***  |
+            |   District-South            |                  |    -158083.17 ***  |
+            |   District-UniversitySouthwest  |               |   -150505.69 ***   |              
+            |   District-Upper Far Northeast  |               |   -237406.16 ***  |
+            |   District-Upper North         |               |    -211494.08 ***  |
+            |   District-Upper Northwest     |               |    -174983.67 ***  |
+            |   District-West                |               |    -197151.44 ***  |
+            |   District-West Park           |              |     -217117.82 ***  |
+            |   Crimes                       |           |   -3053.32 ***      |
+            |   Transit Stops                |              |           7520.68 ***  |
+            |   Hospitals                    |              |      -1.74 ***  |
+            |   Shops                        |              |     -15.81 ***  |
+            |   Schools                      |             |   9548.06 ***    |
+            |   Minor                       |              |  -195101.02 ***  |
+            |   N                           |     23588   |         23587     |    
+            |   R2                          |         0.44 |             0.66  |    
+Table 8 *** p < 0.001; ** p < 0.01; * p < 0.05
+
+# Variables Summary
+
+Learning how accounting for neighborhood effect as well as proximity to public services and crime would significantly impact sale price, we will be using our second regression model for sale price prediction. Before doing that, we would like to present a full detailed summary of all of the variables in our model to ensure their legibility. We have organized this section as follows. First, we present a overall summary table of all of the variables, categorized by data type and effect on housing price. Then, we split the data into numerical and categorical. For the numerical variables, we performed cor test to test their significance whereas for categorical variables, we performed ANOVA test. This is followed by some selected visualizations of our predictors.
+
+| Variable Name                | Type        | 
+| :----------: | :----------:  |  
+| **Internal Characteristics** |             |
+| Age                          | Numeric     |
+| Number of Rooms              | Numeric     |
+| Basement (Y/N)               | Categorical |
+| Air Conditioner (Y/N)        | Categorical |
+| Quality Grade                | Categorical |
+| Building Type                | Categorical |
+| Fireplace (Y/N)              | Categorical |
+| Garage (Y/N)                 | Categorical |
+| Stories Type                 | Categorical |
+| Area                         | Numeric     |
+| Type of View                 | Categorical |
+| **Public Service**           |             |
+| Surrounding Crimes           | Numeric     |
+| Nearby Transit Stops         | Numeric     |
+| Distance to Hospitals        | Numeric     |
+| Distance to Shops            | Numeric     |
+| Nearby Private High School   | Numeric     |
+| **Spatial Characteristics**  |             |
+| Planning District            | Categorical |
+| Minority Neighborhood        | Numeric     |
+Table 9
+
+## Numeric Variables
+
+The average sale price is approximately \$265,664, with a relatively high standard deviation of \$201,069, indicating a significant variation in sale prices in the data. The lowest price is \$10,100, and the highest price is close to \$2,000,000. The average age of houses is 85.7 years, with a relatively scattered distribution. The maximum age is 273 years, and the most recently built house is less than one year old. The average number of rooms is approximately 3.63, with a standard deviation of 1.71, indicating that the variation in room counts is not significant, with a maximum of 14 rooms per house. 
+
+The average number of crime incidents within a 200-meter radius of the house is 3.88, with a standard deviation of 4.21, indicating a significant variation in crime counts. The average number of subway stations near houses is 0.583, with a standard deviation of approximately 1, indicating a relatively small variation in the number of stations. The maximum number of stations within the radius is 8. The average distance to the nearest hospital is 1.6 kilometers, with a large variation as indicated by the standard deviation. Houses are as close as less than 30 meters and as far as over 8 kilometers from the nearest hospital. The average distance to the nearest commercial activity is approximately 700 meters, with significant variation, ranging from as close as 200 meters to as far as over 2.6 kilometers. The average number of schools within a 1.5-kilometer radius is 0.543, with a small standard deviation, indicating relatively little variation in school counts, with a maximum of 2 schools within the radius.
+
+```{r numeric table, include=FALSE}
+
+neighboreffect_nongeom <- neighboreffect %>% st_drop_geometry()
+neighboreffect_nongeom  <- neighboreffect_nongeom  %>%
+  dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor) %>% 
+    dplyr::select_if(is.numeric)
+
+stargazer(neighboreffect_nongeom, type = 'text', title= "Table 1: Summary Statistics")
+
+```
+
+| Statistic | N         | Mean      | St.Dev.   | Min       | Max       |
+|:----------|:----------|:----------|:----------|:----------|:----------|
+| Sale Price| 23,587    | 265,664   | 201,069   | 10,100    | 1,990,000 |
+| Age       | 23,587    | 85.700    | 29.100    | 0         | 273   |
+| Rooms     | 23,587    | 3.630     | 1.710     | 0         | 14      |
+| Area      | 23,587    | 7.380     | 0.557     | 5.230     | 10.800     |
+| Crimes    | 23,587    | 3.880     | 4.210     | 0         | 42    |
+| Transit   | 23,587    | 0.583     | 1.040     | 0         | 8       |
+| Hospital  | 23,587    | 5,298.000 | 3,495.000 | 79.400    | 26,069.000    |
+| Shops     | 23,587    | 2,227.000 | 807.000   | 747.000   | 8,790.000      |
+| School    | 23,587    | 0.543     | 0.660     | 0         |2     |
+| Minority  | 23,587    | 0.602     | 0.319     | 0.000     |1.100       |
+Table 10
+
+The following chart shows the correlations between the variables. There is a strong positive correlation between nearby crime incidents and being a minority community. This impact is reflected in the negative correlations with house prices. In addition to house age, the distance to the nearest hospital also shows a negative correlation with house prices, confirming that a noisy environment near hospitals can indeed negatively affect the living experience. Furthermore, house area, the number of subway stations nearby, and the number of private schools within a 1.5-kilometer radius all show positive correlations with house prices, indicating that houses with larger areas, more nearby subway stations, and more nearby private schools have an advantage in pricing.
+
+```{r numeric corrplot}
+varibles <- 
+  neighboreffect %>% 
+  dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor)
+
+vars <- select_if(st_drop_geometry(varibles), is.numeric) %>% na.omit()
+
+ggcorrplot(
+  round(cor(vars), 1), 
+  p.mat = cor_pmat(vars),
+  colors = c("#283d3b", "white", "#c44536"),
+  type="lower",
+  insig = "blank") +  
+  labs(title = "Correlation Matrix for all Numeric Variables",
+       caption = "Data: Philadelphia Properties and Current Assessments \n Open Data Philly") +
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=6),
+        axis.text.y=element_text(size=6), 
+        axis.title=element_text(size=8))
+
+
+
+
+```
+
+We made an additional scatterplot in order to better visualize the direction and strength of correlation between sale price and our numeric predictor variables. 
+
+```{r scatter plot, fig.height=8, fig.width=11}
+
+neighboreffect_nongeom_long <- neighboreffect_nongeom%>% 
+  pivot_longer(cols = -sale_price, # everything except measurement
+               names_to = "Type", # categorizes all quantitative variables into Type
+               values_to = "Number") # the name of values is Number
+
+neighboreffect_nongeom_long %>%
+  ggplot(aes(x= Number, y = sale_price)) +
+  geom_point(size = 0.01, color = "#283d3b") +  
+  geom_smooth(method='lm', formula= y~x, lwd=0.5, color = "#c44536") +
+  facet_wrap(~ Type, scales = "free", labeller= labeller(Type = c(
+    `Age` = "Age",
+    `hospitals_nn1` = "Crimes",
+    `crimes.Buffer` = "Hospital",
+    `logarea` = "Area",
+    `meanMinor` = "Minority Pop",
+    `numRooms` = "Num Rooms",
+    `school_buffer` = "School",
+    `shops_nn3` = "Shops",
+    `totalstops` = "Transit Stops")))  +
+  labs(title = "Scatter Plot of Sale Price over Numeric Predicted Variables",
+       caption = "Data: Philadelphia Properties and Current Assessments \n Open Data Philly") +
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=6),
+        axis.text.y=element_text(size=6), 
+        axis.title=element_text(size=8), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+
+
+```
+
+
+Based on this, we conducted a correlation analysis among the variables, and the results are shown in the table below. According to the results, house age `(P<0.001, T= -31.16)`, crime count within 200 meters `(P<0.001, T= -64.71)`, distance to the nearest hospital `(P<0.001, T= -19.49)`, and being a minority-majority community `(P<0.001, T= -95.12)` all have significant negative correlations. The correlation coefficients are -0.199, -0.388, -0.126, and the correlation coefficient for being a minority community is as high as -0.527. Room count `(P<0.001, T= 14.72)`, the logarithm of area `(P<0.001, T= 66.22)`, the number of subway stations `(P<0.001, T= 19.15)`, and the number of schools within a 1.5-kilometer radius `(P<0.001, T= 23.61)` all show significant positive correlations. Additionally, although the number of commercial activities nearby `(P<0.001, T= -4.34)` also shows a significant negative correlation, its coefficient is low, at -0.028.
+
+```{r corr test}
+
+cor_var <- c("Age", "numRooms", "logarea", "crimes.Buffer", "totalstops", "hospitals_nn1", "shops_nn3", "school_buffer", "meanMinor")
+
+new_row_names <- c(
+  "Age",
+  "Number of Rooms",
+  "Area",
+  "Crimes",
+  "Transit Stops",
+  "Hospitals",
+  "Shops",
+  "Schools",
+  "Minor"
+)
+
+cor_summary_table <- data.frame(Variable = character(0), Correlation = numeric(0))
+
+for (var in cor_var) {
+  correlation_test <- cor.test(neighboreffect$sale_price, neighboreffect[[var]])
+  correlation <- correlation_test$estimate
+  p_value <- correlation_test$p.value
+  t_statistic <- correlation_test$statistic 
+  ci_lower <- correlation_test$conf.int[1] 
+  ci_upper <- correlation_test$conf.int[2] 
+  summary_data <- data.frame(Correlation = correlation, P_Value = p_value, T_Statistic = t_statistic, CI_Lower = ci_lower, CI_Upper = ci_upper)
+  cor_summary_table <- rbind(cor_summary_table, summary_data)
+}
+
+cor_summary_table$P_Value <- sprintf("%.3f", cor_summary_table$P_Value)
+
+cor_summary_table$P_Value <- ifelse(cor_summary_table$P_Value < 0.001, paste0("< 0.001", "***"), ifelse(cor_summary_table$P_Value < 0.01, paste0(cor_summary_table$P_Value, "**"), ifelse(cor_summary_table$P_Value < 0.05, paste0(cor_summary_table$P_Value, "*"), as.character(cor_summary_table$P_Value))))
+
+rownames(cor_summary_table) <- new_row_names
+
+kable(cor_summary_table) %>% kable_styling( bootstrap_options = c("striped", "hover", "condensed")) %>%
+ footnote(general_title = "\n", general = "Table 11")
+
+```
+
+
+## Categorical Variables 
+
+The table below shows all of the categorical variables in our model as well as the count for subgroups in each variable. 
+
+
+| Variable Name         | Count (%)        | 
+| :----------           | :----------:  |  
+| **Basement**          |            |
+| Yes                   | 13,863 (59%)      |
+| No                    | 9,724 (41%)    |
+| **Air Conditioner**   |        |
+| Yes                   | 7,771 (33%) |
+| No                    | 15,816 (67%) |
+| **Quality Grade**     |              |
+| Good                  | 1,074 (4.6%) |
+| Bad                   | 22,513 (95%) |
+| **Building Types**    |              |
+| Other                 | 2,352 (10.0%)     |
+| Row                   | 17,978 (76%) |
+| Twin                  | 3,257 (14%) |
+| **Fire Place**        |             |
+| Yes                   | 831 (3.5%)     |
+| No                    | 22,756 (96%)     |
+| **Garage**            |     |
+| Yes                   | 355 (1.5%)     |
+| No                    | 23,232 (98%)     |
+| **Stories Number**    |             |
+| Double                | 16,688 (71%) |
+| Multiple              | 2,943 (12%)    |
+| Single                | 3,956 (17%)     |
+| **View**              |      |
+| Scenic                | 959 (4.1%)     |
+| Urban                 | 449 (1.9%)    |
+| Typical               | 22,179 (94%)     |
+| **District Name**     |   |
+| Central	              | 2,072 (8.8%) |
+| Central Northeast     |	1,015 (4.3%) |
+| Lower Far Northeast   |	1,038 (4.4%) |
+| Lower North	          | 1,353 (5.7%) |
+| Lower Northeast	      | 1,472 (6.2%) |
+| Lower Northwest	      | 1,260 (5.3%) |
+| Lower South	          | 63 (0.3%)    |
+| Lower Southwest	      | 609 (2.6%)   |
+| North	                | 1,902 (8.1%) |
+| North Delaware	      | 1,888 (8.0%) |
+| River Wards	          | 1,733 (7.3%) |
+| South	                | 2,953 (13%)  |
+| University Southwest	| 646 (2.7%) |
+| Upper Far Northeast	  | 785 (3.3%) |
+| Upper North	          | 1,786 (7.6%) |
+| Upper Northwest	      | 1,112 (4.7%) |
+| West	                | 1,481 (6.3%) |
+| West Park	            | 419 (1.8%) |
+Table 12
+
+```{r categorical table, include=FALSE}
+vars <- select_if(st_drop_geometry(varibles), negate(is.numeric)) %>% na.omit()
+vars %>% tbl_summary() %>% as_kable() %>%  kable_styling()
+```
+
+
+For each of these categorical variables, we performed an Analysis of Variance (ANOVA) test. ANOVA is a statistical test that allows us to compare means across across three or more groups. Its significance lies in its ability to efficiently assess variations among these groups by partitioning the total variance, thereby determining if the differences are statistically significant. In our case, we are interested in whether there's a significant difference in sale price between houses with different views, for example. We found that all of our categorical predictor variables are significant predictors of sale prices.
+
+```{r anova tests}
+anova_var <- c("DIST_NAME", "view", "stories", "hasGarage", "hasFireplace", "buildingdis", "quality", "hasAC", "hasBasement")
+
+new_row_names <- c(
+  "District Name",
+  "Type of View",
+  "Number Stories",
+  "Garage",
+  "Fireplace",
+  "Type of Building",
+  "Quality Grade",
+  "Air Conditioning",
+  "Basement"
+)
+
+anova_summary_table <- data.frame(Df = integer(0), Sum_Sq = numeric(0), Mean_Sq = numeric(0), F_value = numeric(0))
+row_names <- character(0)
+
+for (i in seq_along(anova_var)) {
+  var <- anova_var[i]
+  anova_result <- aov(neighboreffect$sale_price ~ as.factor(neighboreffect[[var]]))
+  #paste("ANOVA result for", var)
+  summary_data <- summary(anova_result)[[1]][, c("Df", "Sum Sq", "Mean Sq", "F value")]
+  anova_summary_table <- rbind(anova_summary_table, summary_data)
+   row_names <- c(row_names, paste(var))
+}
+
+filter_condition <- !grepl("Residuals", rownames(anova_summary_table))
+filtered_anova_summary <- anova_summary_table[filter_condition, ]
+
+rownames(filtered_anova_summary) <- new_row_names
+kable(filtered_anova_summary) %>% kable_styling( bootstrap_options = c("striped", "hover", "condensed")) %>%
+  footnote(general_title = "\n", general = "Table 13")
+```
+
+
+We proceed to make bar charts for all of our categorical predictor variables. We may see that most houses in Philadelphia, do not have a basement, do not have air conditioner, are of less satisfying quality, are row houses, do not have a fire place, have a garage, are of multiple stories, and has typical view. 
+
+```{r bar plot, fig.height=8, fig.width=11}
+
+variables_to_plot <- c("hasBasement", "hasAC", "hasFireplace", "hasGarage", "stories", "view",  "quality", "buildingdis")
+subset_varibales <- neighboreffect %>% select(all_of(variables_to_plot)) %>%  st_drop_geometry()
+
+long_vars <- gather(subset_varibales)
+
+plot1 <- ggplot(long_vars, aes(x = value)) +
+  geom_bar(fill= "#283d3b") +
+  facet_wrap(~ key, scales = "free", ncol = 4,  labeller= labeller(key = c(
+    `buildingdis` = "Building Type",
+    `hasAC` = "Air Conditioner",
+    `hasBasement` = "Basement",
+    `hasFireplace` = "Fireplace",
+    `hasGarage` = "Garage",
+    `quality` = "Quality Grade",
+    `stories` = "Number Stories",
+    `view` = "Type of View"))) +
+  labs(title = "Distribution of Categorical Predictor Variables",
+       x = "Value",
+       y = "Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=6),
+        axis.text.y=element_text(size=6), 
+        axis.title=element_text(size=8), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+
+
+variables_to_plot <- c("DIST_NAME")
+subset_varibales <- neighboreffect %>% select(all_of(variables_to_plot)) %>%  st_drop_geometry()
+long_vars <- gather(subset_varibales)
+plot2 <- ggplot(long_vars, aes(x = value)) +
+  geom_bar(fill = "#283d3b") +
+  facet_wrap(~ key, scales = "free", labeller= labeller(key = c(
+    `DIST_NAME` = "District Name"))) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=6),
+        axis.text.y=element_text(size=6), 
+        axis.title=element_text(size=8), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+
+(plot1 | plot2) + plot_layout(widths = c(2, 1.5))
+
+```
+
+
+## Variable Maps 
+
+Below, we made some visualizations of selected predictor variables to understand their spatial characteristics. The first map we made shows the spatial distribution of property sale price in Philadelphia, from which we can see that sale price in Philadelphia is pretty spatially clustered. Houses that are worth a million or more are typically located at the outskirt of the city, such as the northeast corner, as well as the center city, whereas houses that worth than 250k are located in Northeast and West Philadelphia. 
+
+```{r sale price map}
+
+neighboreffect <- neighboreffect %>% 
+  mutate(sale_class = cut(sale_price, breaks = c(0, 250000, 500000, 750000, 1000000, max(neighboreffect$sale_price, na.rm=TRUE))))
+palette <- c("#edddd4","#c44536","#197278","#772e25","#283d3b")
+
+
+ggplot()+
+    geom_sf(data=dst, fill='grey80',color='transparent')+
+    geom_sf(data=neighboreffect, size=0.75,aes(colour = q5(sale_class)))+
+    scale_color_manual(values = palette,
+                    name = "Sales Price",
+                    na.value = 'grey80',
+                    labels = c('0-250k', '250k-500k', '500k-750k', '750k-1m', '1m More')) +
+   theme(
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.4)
+        ) +
+  labs(title = "Distribution of Sale Price in Philadelphia",
+       caption = "Data: Philadelphia Properties and Current Assessments") 
+
+```
+
+The second map shows the distribution of crimes in Philadelphia. Note that while this maps below is not a kernel density plot. Rather, each point represents of single house, of which we created a buffer around and summarized the number of crime within that particular buffer. Therefore, each point is colored by the number of crimes nearby - the darker the color, the higher the number of crime incidents nearby. We can see that houses with more crime incidents nearby are mainly located in West and North Philadelphia. 
+
+```{r crime map}
+
+ggplot()+
+  geom_sf(data=dst,fill='grey80',color='transparent')+
+  geom_sf(data=neighboreffect,aes(colour = (crimes.Buffer)),size=0.24)+
+ scale_color_continuous(low = "#FAF9F6", high = "#c44536", name= "Crime Buffer") + 
+     theme(
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.4)
+        ) +
+  labs(title = "Distribution of Crimes in Philadelphia",
+       subtitle = "Note: each point represents a single house colored by number of crimes nearby", 
+       caption = "Data: OpenDataPhilly") 
+
+```
+
+
+The third map shows the distribution of minority population in Philadelphia. Again, each point represents a single house. We calculated the percentage of minority population within each census tract and this value was applied to all houses within that census tract. Based on our observations from previous two maps, we may see that minority populations are located in areas where there tends to be lower house price and higher crime rate. This provides important implications to our house price predictions. 
+
+```{r minority map}
+
+ggplot()+
+  geom_sf(data=dst,fill='grey80',color='transparent')+
+  geom_sf(data=neighboreffect,aes(colour = meanMinor),size=0.5)+
+  scale_color_continuous(low = "#FAF9F6", high = "#283d3b", name= "Pct Minority Population ")+
+   theme(
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.4)
+        ) +
+  labs(title = "Distribution of Minority Population in Philadelphia",
+       subtitle = "Note: each point represents a single house colored by pct of minority pop", 
+       caption = "Data: American Community Survey 2020 ") 
+
+```
+
+For our final map, we visualized the distribution of housing type in Philadelphia. It is evident that housing type is also spatially clustered with row house being the most dominant type of housing in the city, leaving twin houses and other types of houses at the outskirt of Philadelphia. Drawing from previous observations regarding how race, crime, and sale price are also spatially clustered, it would not be difficult to make connection between variations in sale price and various house types. 
+
+
+```{r building type map}
+ggplot()+
+  geom_sf(data=dst,fill='grey80',color='transparent')+
+  geom_sf(data=neighboreffect,aes(colour = buildingdis),size=0.5)+
+  scale_color_manual(values =c("#c44536","#197278","#772e25")  , name = "Building Type")+
+  theme(
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.4)
+        ) +
+  labs(title = "Distribution of House Type in Philadelphia",
+       caption = "Data: Philadelphia Properties and Current Assessments") 
+```
+
+
+# Final Model 
+
+## Making Predictions
+
+Based on the neighborhood effect model with added and adjusted geographical attributes, we predicted the sale prices of randomly selected training data set houses and calculated the Mean Absolute Error (MAE) and Mean Absolute Percentage Error (MAPE). The MAE and MAPE for the neighborhood effect model are 73326 and 12.3%, respectively. Compared to the previous values of 98329 and 39%, both MAE and MAPE have significantly decreased, indicating an improved accuracy of the model's predictions.
+
+```{r prediction with final model, warning=FALSE, message=FALSE}
+
+set.seed(485) 
+
+inTrain <- createDataPartition(
+    y = paste(neighboreffect$DIST_NAME, neighboreffect$hasBasement, neighboreffect$hasAC, neighboreffect$quality, neighboreffect$buildingdis, neighboreffect$hasFireplace, neighboreffect$hasGarage, neighboreffect$stories, neighboreffect$view), 
+             p = .60, list = FALSE)
+
+
+tr_neigh.training <- neighboreffect[inTrain,] 
+tr_neigh.test <- neighboreffect[-inTrain,]  
+
+reg.train <- lm(sale_price ~ ., data = tr_neigh.training %>% st_drop_geometry() %>% 
+                                 dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
+                                               hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor))
+
+
+tr_neigh.test <- 
+  tr_neigh.test %>% 
+  mutate(Regression = "Neighborhood Effects", 
+    SalePrice.Predict = predict(reg.train, tr_neigh.test),
+         SalePrice.Error = SalePrice.Predict - sale_price,
+         SalePrice.AbsError = abs(SalePrice.Predict - sale_price),
+         SalePrice.APE = (abs(SalePrice.Predict - sale_price)) / SalePrice.Predict)
+
+tr_neigh.test %>% 
+  st_drop_geometry() %>%
+  summarise(MAE = mean(SalePrice.AbsError),
+            MAPE = mean(SalePrice.APE)*100) %>%
+  kbl(col.name=c('Mean Absolute Error','Mean Absolute Percentage Error')) %>%
+  kable_styling( bootstrap_options = c("striped", "hover", "condensed")) %>%
+  footnote(general_title = "\n", general = "Table 14")  
+
+```
+
+## Checking Predictions 
+
+We quickly ran the Moran's I again to check for spatial autocorrelation using our final model that account for neighborhood effects. The figure below plot the frequency of 999 randomly permutated I under Monte Carlo simulation, which shows that our observed I is still higher than all of the randomly generated I's, but much smaller than our previous Moran's I plot when neighborhood effect is not accounted for. This means that the errors of our prediction are still clustered in space. 
+
+```{r final model Global G statistics, message=FALSE, warning=FALSE}
+
+coords.test_n <-  st_coordinates(tr_neigh.test) 
+neighborList.test_n <- knn2nb(knearneigh(coords.test_n, 5))
+spatialWeights.test_n <- nb2listw(neighborList.test_n, style="W")
+
+moranTest_n <- moran.mc(tr_neigh.test$SalePrice.Error, 
+                      spatialWeights.test_n, nsim = 999)
+
+ggplot(as.data.frame(moranTest_n$res[c(1:999)]), aes(moranTest_n$res[c(1:999)])) +
+  geom_histogram(binwidth = 0.01, fill = "#283d3b") +
+  geom_vline(aes(xintercept = moranTest_n$statistic), colour = "#c44536" ,size=1) +
+  scale_x_continuous(limits = c(-0.5, 0.5)) +
+  labs(title = "Observed and Permuted Moran's I - Neighborhood Effect",
+       subtitle = "Observed Moran's I in Red",
+       x = "Moran's I",
+       y = "Count") +
+  theme_light() +   
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=6),
+        axis.text.y=element_text(size=6), 
+        axis.title=element_text(size=8))
+
+```
+
+We then plotted the predicted prices as a function of observed sale prices. The green line represents a would-be perfect fit, while the dark green line represents the predicted fit. We see that with the addition of the neighborhood effect, our model does a pretty satisfying job at predicting the sale price, perhaps by explaining part of the spatial process and local amenities. 
+
+
+```{r observed and predicted sale price, message=FALSE, warning=FALSE}
+
+tr_neigh.test %>%
+  dplyr::select(SalePrice.Predict, sale_price) %>%
+  ggplot(aes(sale_price, SalePrice.Predict)) +
+  geom_point(color = "#c44536", size = 0.3) +
+  stat_smooth(aes(sale_price, sale_price), 
+             method = "lm", se = FALSE, size = 1, colour="#197278") + 
+  stat_smooth(aes(SalePrice.Predict, sale_price), 
+              method = "lm", se = FALSE, size = 1, colour="#283d3b") +
+  labs(title="Predicted Sale Price as a Function of Observed Price",
+       subtitle="Green line represents a perfect prediction; dark green line represents prediction",
+       x = "Sale Price",
+       y = "Predict Price") +
+    theme_light() +   
+theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=6),
+        axis.text.y=element_text(size=6), 
+        axis.title=element_text(size=8))
+
+```
+
+We also mapped the distribution of sale price error of our testing set using the final model, from which we see that our prediction error is distributed uniformly across space, with no presence of extremely big errors, which is a satisfying observation. 
+
+```{r salpe price error map}
+ggplot()+
+  geom_sf(data=dst,fill='#E5E4E2',color='transparent')+
+  geom_sf(data=tr_neigh.test,aes(colour = SalePrice.Error),size=0.5)+
+  scale_color_continuous(high = "#FAF9F6", low = "#197278", name= "Sale Price Error ") +
+  theme(
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.4)
+        ) +
+  labs(title = "Distribution of Sale Price Error Testing Set") 
+
+```
+
+Finally, we mapped the sale price error as a function of lag price error, which is the average price of a home sale’s 5 nearest neighbors. The plot suggests a positive correlation between sale price error and lag price error. The fact that points are compacted around the line of best fit means that the correlation here is strong. However, we do see a cluster of points with both high sale price error and lag price error.
+
+
+```{r sale price error and lagerror, warning=FALSE, message=FALSE}
+
+tr_neigh.test %>% 
+  mutate(lagPriceError = lag.listw(spatialWeights.test_n, SalePrice.Error)) %>%
+  ggplot()+
+  geom_point(aes(x =lagPriceError, y =SalePrice.Error), color = "#c44536", size = 0.3)+
+  stat_smooth(aes(lagPriceError, SalePrice.Error), 
+             method = "lm", se = FALSE, size = 1, colour="#197278")  +
+  labs(title="Sale Price Error as a Function of Lag Price Error",
+       x = "Lag Price Error",
+       y = "Sale Price Error") +
+theme_light() +   
+theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=6),
+        axis.text.y=element_text(size=6), 
+        axis.title=element_text(size=8))
+```
+
+Up until this point, it seems that our testing data is making a good prediction on the actual sale price. However, this only partially proves that our model is effective at predicting property value of the entire Philadelphia. The story behind could be that the 40% of data points being selected through partition as the testing data set fits well into the model coincidentally. To check for the generalizability of our model to the entire Philadelphia, we would need to perform a cross-validation test. 
+
+## Cross Validation 
+
+On this basis, we conducted 100 cross-validations of the neighborhood effect model with 18 predictor variables. The RMSE value is 116278, indicating that despite being our best solution so far, the model's prediction error can still be relatively large. The R-squared value is 0.667, indicating a good level of variance explanation by the model. 
+
+```{r cross validation, message=FALSE, warning=FALSE}
+
+fitControl <- trainControl(method = "cv", number = 100)
+set.seed(485)
+
+reg.cv <- 
+  train(sale_price ~ ., data = st_drop_geometry(neighboreffect) %>% 
+                             dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
+                                               hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor), method = "lm", trControl = fitControl, na.action = na.pass)
+
+reg.cv$resample %>% 
+  summarise(MAE = mean(reg.cv$resample[,3]),
+            sd(reg.cv$resample[,3])
+) %>%
+  kbl(col.name=c('Mean Absolute Error','Standard Deviation of MAE')) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  footnote(general_title = "\n", general = "Table 15")
+```
+
+On average, the model's Mean Absolute Error is approximately 76,019, with a standard deviation of 5,782. This suggests that while there is some dispersion, the MAE is generally concentrated around the mean.
+
+```{r histogram MAE, message=FALSE, warning=FALSE}
+reg.cv$resample %>% 
+ggplot(aes(x=reg.cv$resample[,3])) +
+    geom_histogram( fill="#197278", color="#e9ecef") + 
+    labs(title="Distribution of Mean Absolute Error for Overall Prediction",
+       x = "Mean Absolute Error",
+       y = "Count") +
+theme_light() +   
+theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=6),
+        axis.text.y=element_text(size=6), 
+        axis.title=element_text(size=8))
+```
+
+
+# Overall Prediction
+
+For our overall prediction, we see that house priced above \$1 million are mainly concentrated in the northern, northwestern, and central parts of Philadelphia. The northern area, in particular, has a denser concentration of high-priced homes, while the central and western areas have a more dispersed distribution. Most houses with values ranging from \$750,000 to \$1 million are located in the southern and northeastern areas, with a few scattered in the northwestern region, overlapping with the distribution range of homes priced above \$1 million. Houses in the \$500,000 to \$750,000 range are primarily found in the western, southwestern, and northeastern parts of the city. In the southwestern and northeastern areas, these homes are closer to the city center compared to higher-priced ones. In the western area, they tend to be more remote. Houses valued between \$250,000 and \$500,000 are mainly located in the central part of the city, surrounded by higher-priced houses. Houses priced below \$250,000 exhibit stronger clustering characteristics and are primarily clustered in the eastern and southwestern parts of the city, with another portion scattered in the northwestern area, overlapping with the distribution range of houses priced between \$250,000 and \$500,000. In summary, Philadelphia's predicted housing prices are generally higher in the northeastern, northwestern, and southern parts of the city, while the central city area tends to have lower-priced houses. In terms of the north-south direction, there is a higher concentration of high-priced houses in the northern region compared to the southern area. In terms of the east-west direction, the eastern part of the city has a higher concentration of high-priced houses compared to the western area.
+
+```{r full dataset prediction}
+
+PredictAllVal <- tr_neigh %>% 
+  mutate(prediction = predict(reg.train, tr_neigh)) 
+
+PredictAllVal <- PredictAllVal %>% 
+  mutate(prediction_class = cut(prediction, breaks = c(0, 250000, 500000, 750000, 1000000, max(prediction, na.rm=TRUE))))
+
+
+
+ggplot()+
+    geom_sf(data=dst, fill='grey80',color='transparent')+
+    geom_sf(data=PredictAllVal, size=0.75,aes(colour = q5(prediction_class)))+
+    scale_color_manual(values = palette,
+                    name = "Sales Price",
+                    na.value = 'grey80',
+                    labels = c('0-250k', '250k-500k', '500k-750k', '750k-1m', '1m More')) +
+   theme(
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.4)
+        ) +
+  labs(title = "Distribution of Predicted Sale Price in Philadelphia") 
+
+```
+
+We tested our model's generalizability across different racial groups in Philadelphia. 
+
+```{r map based on race}
+
+ggplot() + geom_sf(data = na.omit(tracts20), aes(fill = majority), color = NA) +
+    scale_fill_manual(values = c("#c44536", "#283d3b"), name="Race Context") +
+    labs(title = "Race Context for Philadelphia Census Tracts",
+         caption = "Data: American Community Survey 2020") +
+    theme(legend.position="bottom") +
+  theme(
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.4)
+        ) 
+
+```
+
+According to the test results for the prediction of house prices in majority and minority communities by the neighborhood effect model, the MAPE for predicting majority communities is 26%, while the MAPE for predicting minority communities is only 3%. Although there is a significant deviation in predicting house prices in the Kensington community compared to actual prices, this indicates that the model has lower accuracy in predicting house prices in majority communities and higher generality in predicting house prices in most minority communities, excluding Kensington.
+
+```{r prediction based on race}
+
+st_join(tr_neigh.test, tracts20) %>% 
+  filter(!is.na(majority)) %>%
+  group_by(majority) %>%
+  summarize(mean.MAPE = scales::percent(mean(SalePrice.APE, na.rm = T))) %>%
+  st_drop_geometry() %>%
+  spread(majority, mean.MAPE) %>%
+  kbl(col.name=c('Majority Tracts','Minority Tracts')) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  footnote(general_title = "\n", general = "Table 16")
+
+```
+
+
+Finally, we tested our model's generalizability across different neighborhoods in Philadelphia. After checking the mean absolute percentage errors of property values for each neighborhood, we're surprised to notice that our model had predicted a couple of sale price to be negative. On top of that, we found that the majority of those houses predicted to have negative sale price are concentrated in the Kensington Neighborhood. While it is possible that OLS regression models can be off sometime at predicting sale price of houses with certain unique characteristics, such continuous streams of errors concentrated a single neighborhood suggest some systematic problems with our model. 
+
+The Kensington neighborhood has faced a variety of challenges, particularly concerning poverty, drug addiction, and crime. A significant portion of Kensington's population have limited access to economic opportunities, quality education, and healthcare resources. High rates of unemployment and underemployment have contributed to financial instability for many families in the area. Considering that our final model have taken crime rate, proximity to schools, hospitals, and transit stops into account, it is possible that our model has significantly devalued properties at neighborhood facing severe socio-economic challenges like Kensington. 
+
+Looking at the overall MAPE is not enough to determine the model's accuracy as it could mask variations at a more granular spatial scale, for example the neighborhood. Our model has a pretty low MAPE, but we have to be aware that those negative, erroneous sale prices are also contributing to the low MAPE. If we had the right prediction of sale price for these houses, our MAPE should be higher. Therefore, for the map below, we have removed Kensington neighborhood on purpose for it does not make any sense for a neighborhood to have a negative absolute percentage error in sale price. 
+
+```{r prediction based on neighborhood map, message=FALSE, warning=FALSE}
+
+to_plot <- st_intersection(tr_neigh.test, Philly %>% dplyr::select("NAME")) %>% 
+  st_drop_geometry() %>% 
+  group_by(NAME) %>%
+  summarise(mean.MAPE = mean(SalePrice.APE, na.rm = T)) %>% 
+  left_join(Philly) %>% 
+  st_sf()
+to_plot %>%
+  filter(NAME != "KENSINGTON") %>% 
+  ggplot() + 
+      geom_sf(aes(fill = mean.MAPE)) +
+  scale_fill_continuous(low = "grey80", high = "#772e25", name= "MAPE") +
+  theme(
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.4)
+        ) +
+  labs(title = "Mean Absolute Percentage Error By Neighborhood") 
+
+```
+
+Here, we can also see that errors in sale price prediction tend to be larger when the sale price itself is already low. Since we know that houses with low sale price are clustered in areas where there's higher crime rate, minority population as well as poorer public services nearby, this proves our concern that our model tends to devalue property values in these areas. 
+
+```{r prediction based on neighborhood plot}
+tr_neigh.testPhilly <- st_join(tr_neigh.test, Philly %>% select(NAME)) %>% 
+  group_by(NAME) %>%
+  summarise(mean.MAPE = mean(SalePrice.APE, na.rm = T)) %>% 
+  mutate(st_join(tr_neigh.test, Philly %>% select(NAME)) %>% group_by(NAME) %>%
+  summarise(mean.Price = mean(sale_price, na.rm = T)))
+
+tr_neigh.testPhilly %>% filter(NAME != "KENSINGTON") %>%
+  ggplot(aes(mean.MAPE,mean.Price)) +
+  geom_point(color = "#c44536", size = 0.8 ) +
+ # geom_smooth(method='lm', formula= y~x, lwd=0.5, color = "#197278") +
+    labs(title="Sale Price as a Function of MAPE by Neighborhood",
+       x = "MAPE",
+       y = "Sale Price") +
+  theme_light() +   
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=6),
+        axis.text.y=element_text(size=6), 
+        axis.title=element_text(size=8))
+```
+
+
+```{r write csv, include=FALSE}
+challenge <- tr_neigh %>% 
+  filter(toPredict == "CHALLENGE")
+
+PricePrediction <-
+  st_drop_geometry(challenge)%>%
+  mutate(prediction = predict(reg.train, challenge),
+         team = "Husky")%>%
+  dplyr::select(musaID, prediction, team)
+
+write.csv(PricePrediction,"RegressToImpress.csv", row.names = FALSE)
+```
+
+# Conclusion
+
+In conclusion, our model is effective in predicting property values in the city of Philadelphia only to a certain extent. While we are able to fit a model that account for variations of sale price in terms of their internal characteristics, spatial locations, as well as nearby amenities, this model lacks generalizability and tends to devalue certain properties in the city, especially for houses in lower-income communities, such as the Kensington neighborhood. The reason behind this error is probably because our model contains predictors such as nearby crime incidents, school locations, transit stops, etc. While crime incidents are prevalent in Kensington, the latter two predictors have historically been inaccessible neighborhoods like that. 
+
+Some further online research into migration and gentrification patterns in Philadelphia reveals that a lot of families choose to leave Philadelphia after their kids reached school age in order to seek for better primary schools. In addition, our previous report investigating transit oriented development suggests that proximity to public transport systems plays a significant role in affecting people's decision on where to live. Further, studies by City of Philadelphia's Office of Controller suggests that on average, sales that occur closer to a homicide tend to have lower prices than sales that occur farther from a homicide: a reduction of one homicide would lead to a corresponding 2.3 percent increase of sale prices in the immediate neighborhood. All of these evidence suggests that the absence of critical public amenities/service as well as high concentration of crime incidents would together contribute to housing disinvestment. And over-fitting a model with those kind of predictors might lead to severe devaluation of property values. 
+
+At this point, there's still some work to be done before we recommend this model with Zillow. However, our report does find a variety of significant predictor variables that can explain the variability of property values in Philadelphia. This could provide valuable insights for local real estate market when determining sale price for houses. 
+
+With respect to improving this current model, we provide the following suggestions. Firstly, there needs to be a better and more complete data set for property values in Philadelphia. At the data wrangling phase, we found that a lot of the variables in our data set contains missing attributes, errors data entry, inconsistent data categorization, and extreme outliers (that does not make sense). On top of that, the metadata has been poor at documenting data categories. Because of that, we had to make a variety of different assumptions in terms of whether to keep or remove missing data, as well as to combine certain data categories for them to be statistically significant. This makes the model prone to errors. Secondly, we hope to look for some new predictor variables, such as urban greenspace coverage, considering that some of the current variables we have, likely crime incidents, would devalue properties. Nevertheless, we argue that the predictor variables for house price is specific to the context of each city. For places like Philadelphia where crime incidents play a significant role in shaping neighborhood landscape, it is still important to consider crime as a factor in affecting sale price - perhaps we should look for an alternative way to account for crime. Thirdly, given Philadelphia's complex housing market, we suspect that our model had failed to account for some of the intra-neighborhood nuances. These nuances cannot be properly generalized and represented using a linear model. To fully account for these variations, we should explore alternative machine learning approaches. In addition, we must get a better understanding of the social and historical landscape of Philadelphia when selecting predictor variables that contextualize with their housing characteristics. 
