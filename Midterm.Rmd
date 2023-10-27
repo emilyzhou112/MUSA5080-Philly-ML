@@ -173,32 +173,18 @@ reg1 <- lm(sale_price ~ ., data = baseline %>% st_drop_geometry() %>%
                                  dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
                                                hasFireplace, hasGarage, stories, logarea, view))
 summary_reg1 <- summary(reg1)
-coefficients_table <- summary_reg1$coefficients
+coefficients_table <- as.data.frame(summary_reg1$coefficients)
 
-new_variable_names <- c(
-  "Age",
-  "Number of Rooms",
-  "Basement",
-  "Air Conditioner",
-  "Quality Grade",
-  "Building Type",
-  "Fireplace",
-  "Garage",
-  "Number Stories",
-  "Type of View",
-  "Area"
-)
+coefficients_table$significance <- ifelse(coefficients_table$`Pr(>|t|)` < 0.001, '***',
+                                         ifelse(coefficients_table$`Pr(>|t|)` < 0.01, '**',
+                                                ifelse(coefficients_table$`Pr(>|t|)` < 0.05, '*',
+                                                       ifelse(coefficients_table$`Pr(>|t|)` < 0.1, '.', ''))))
 
-coefficients_df <- data.frame(
-  Variable = new_variable_names,
-  Estimate = coefficients_table[1:11, "Estimate"],
-  Std.Error = coefficients_table[1:11, "Std. Error"],
-  t_value = coefficients_table[1:11, "t value"],
-  Pr = coefficients_table[1:11, "Pr(>|t|)"]
-)
+coefficients_table$p_value <- paste0(round(coefficients_table$`Pr(>|t|)`, digits = 3), coefficients_table$significance)
 
-coefficients_df %>%
-  kable(row.names = FALSE) %>%
+coefficients_table %>%
+  select(-significance, -`Pr(>|t|)`) %>% 
+  kable(align = "r") %>%
   kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
   footnote(general_title = "\n", general = "Table 1")
 
@@ -216,6 +202,19 @@ model_summary %>%
   kable_styling(bootstrap_options = c("striped", "hover", "condensed"))%>%
   footnote(general_title = "\n", general = "Table 2")
 
+new_variable_names <- c(
+  "Age",
+  "Number of Rooms",
+  "Basement",
+  "Air Conditioner",
+  "Quality Grade",
+  "Building Type",
+  "Fireplace",
+  "Garage",
+  "Number Stories",
+  "Type of View",
+  "Area"
+)
 vif_reg1 <- vif(reg1)
 vif_df <- as.data.frame(vif_reg1)
 vif_df$Variable <- new_variable_names
@@ -515,7 +514,22 @@ reg2 <- lm(sale_price ~ ., data = neighboreffect %>% st_drop_geometry() %>%
                                  dplyr::select(sale_price, Age, numRooms, hasBasement, hasAC, quality, buildingdis, 
                                                hasFireplace, hasGarage, stories, logarea, view, DIST_NAME, crimes.Buffer, totalstops, hospitals_nn1, shops_nn3, school_buffer, meanMinor))
 summary_reg2 <- summary(reg2)
-coefficients_table <- summary_reg2$coefficients
+coefficients_table <- as.data.frame(summary_reg2$coefficients)
+
+
+coefficients_table$significance <- ifelse(coefficients_table$`Pr(>|t|)` < 0.001, '***',
+                                         ifelse(coefficients_table$`Pr(>|t|)` < 0.01, '**',
+                                                ifelse(coefficients_table$`Pr(>|t|)` < 0.05, '*',
+                                                       ifelse(coefficients_table$`Pr(>|t|)` < 0.1, '.', ''))))
+
+coefficients_table$p_value <- paste0(round(coefficients_table$`Pr(>|t|)`, digits = 3), coefficients_table$significance)
+
+coefficients_table %>%
+  select(-significance, -`Pr(>|t|)`) %>% 
+  kable(align = "r") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  footnote(general_title = "\n", general = "Table 5")
+
 
 new_variable_names <- c(
   "Age",
@@ -538,18 +552,8 @@ new_variable_names <- c(
   "Minor Race"
 )
 
-coefficients_df <- data.frame(
-  Variable = new_variable_names,
-  Estimate = coefficients_table[1:18, "Estimate"],
-  Std.Error = coefficients_table[1:18, "Std. Error"],
-  t_value = coefficients_table[1:18, "t value"],
-  Pr = coefficients_table[1:18, "Pr(>|t|)"]
-)
 
-coefficients_df %>%
-  kable(row.names = FALSE) %>%
-  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
-  footnote(general_title = "\n", general = "Table 5")
+
 
 model_summary <- data.frame(
   Statistic = c("Multiple R-squared", "Adjusted R-squared", "F-statistic"),
